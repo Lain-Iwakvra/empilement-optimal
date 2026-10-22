@@ -1,0 +1,5 @@
+__pycache__/
+*.py[cod]
+*.nbc
+*.nbi
+resultats/figures/*.png
