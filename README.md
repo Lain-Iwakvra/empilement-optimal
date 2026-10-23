@@ -23,6 +23,10 @@ de placer `n` objets unitaires, dans quatre configurations :
 
 Aucun framework de deep learning externe n'est utilisé.
 
+Les parties coûteuses sont compilées avec numba (`cache=True`) : entraînement
+Deep-Set/Adam, polissage et ajustement des contacts. Le repli numpy reste
+disponible si numba est absent.
+
 ## Utilisation
 
 ```bash

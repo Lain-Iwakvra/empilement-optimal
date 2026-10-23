@@ -82,6 +82,13 @@ import time
 import numpy as np
 from tqdm import tqdm
 
+try:
+    import numba as _numba
+    _HAS_NUMBA = True
+except ImportError:                                  # numba optionnel
+    _numba = None
+    _HAS_NUMBA = False
+
 # matplotlib en mode non interactif (fichiers seulement)
 import matplotlib
 matplotlib.use("Agg")
@@ -784,6 +791,19 @@ def warmup_jit():
     exact_violation(c, th, 2.0)
     loss_and_backward(c, th, 2.0, 1e-3)
     loss_and_backward(c, th, 2.0, 1e-9)
+    if _HAS_NUMBA:
+        rng = np.random.default_rng(0)
+        p = init_agent(rng, 4, 8, 16)
+        base = (c.copy(), th.copy())
+        train_agent_adam(p, 3, 2.0, base, True, 1, rng)
+        polish((c, th), 2.0, 1, rng, True, hard_iters=1)
+        gi = np.array([0], dtype=np.int64)
+        gj = np.array([1], dtype=np.int64)
+        gk = np.array([0], dtype=np.int64)
+        ei = np.empty(0, dtype=np.int64)
+        ef = np.empty(0, dtype=np.float64)
+        _snap_gn_nb(c[:2].copy(), th[:2].copy(), 2.0, True, True, False,
+                    0.5, gi, gj, gk, ei, ei, ei, ef, ei, ei, ei, 1)
     try:
         import scipy.optimize          # B5 : L-BFGS-B préchargé avant fork
     except ImportError:
@@ -888,6 +908,47 @@ def unravel_params(vec, template):
     return out
 
 
+_adam_step_nb = None
+if _HAS_NUMBA:
+    @_numba.njit(cache=True)
+    def _adam_step_nb(vec, grad, m, v, t, lr, b1, b2, eps):
+        """Mise à jour Adam d'un vecteur plat, entièrement en natif."""
+        out = np.empty_like(vec)
+        bc1 = 1.0 - b1 ** t
+        bc2 = 1.0 - b2 ** t
+        for i in range(vec.size):
+            gi = grad[i]
+            mi = b1 * m[i] + (1.0 - b1) * gi
+            vi = b2 * v[i] + (1.0 - b2) * gi * gi
+            m[i] = mi
+            v[i] = vi
+            out[i] = vec[i] - lr * (mi / bc1) / (math.sqrt(vi / bc2) + eps)
+        return out
+
+    @_numba.njit(cache=True)
+    def _adam_update_1d(arr, grad, m, v, bc1, bc2, lr, b1, b2, eps):
+        """Adam en place sur un tableau 1D (vec, gradient, moments)."""
+        for i in range(arr.size):
+            gi = grad[i]
+            mi = b1 * m[i] + (1.0 - b1) * gi
+            vi = b2 * v[i] + (1.0 - b2) * gi * gi
+            m[i] = mi
+            v[i] = vi
+            arr[i] = arr[i] - lr * (mi / bc1) / (math.sqrt(vi / bc2) + eps)
+
+    @_numba.njit(cache=True)
+    def _adam_update_2d(arr, grad, m, v, bc1, bc2, lr, b1, b2, eps):
+        """Adam en place sur un tableau 2D (poids, gradient, moments)."""
+        for i in range(arr.shape[0]):
+            for j in range(arr.shape[1]):
+                gi = grad[i, j]
+                mi = b1 * m[i, j] + (1.0 - b1) * gi
+                vi = b2 * v[i, j] + (1.0 - b2) * gi * gi
+                m[i, j] = mi
+                v[i, j] = vi
+                arr[i, j] = arr[i, j] - lr * (mi / bc1) / (math.sqrt(vi / bc2) + eps)
+
+
 class Adam:
     def __init__(self, lr=1e-2, b1=0.9, b2=0.999, eps=1e-8):
         self.lr, self.b1, self.b2, self.eps = lr, b1, b2, eps
@@ -900,6 +961,13 @@ class Adam:
             self.m = np.zeros_like(vec)
             self.v = np.zeros_like(vec)
         self.t += 1
+        if _HAS_NUMBA:
+            vec = np.ascontiguousarray(vec, dtype=np.float64)
+            grad = np.ascontiguousarray(grad, dtype=np.float64)
+            self.m = np.ascontiguousarray(self.m, dtype=np.float64)
+            self.v = np.ascontiguousarray(self.v, dtype=np.float64)
+            return _adam_step_nb(vec, grad, self.m, self.v, self.t,
+                                 self.lr, self.b1, self.b2, self.eps)
         self.m = self.b1 * self.m + (1 - self.b1) * grad
         self.v = self.b2 * self.v + (1 - self.b2) * grad * grad
         mh = self.m / (1 - self.b1 ** self.t)
@@ -1613,8 +1681,9 @@ def anneal_config(n, a, rng, iters=1500, rot=True,
 #  Entraînement de l'agent (Adam sur la perte lisse, ou Evolution Strategies)
 # ===========================================================================
 
-def train_agent_adam(params, n, a, base, rot, iters, rng,
-                     tau0=0.05, tau_min=1e-4, lr=1e-2, lam_p=1.0, lam_v=1.0):
+def _train_agent_adam_np(params, n, a, base, rot, iters, rng,
+                         tau0=0.05, tau_min=1e-4, lr=1e-2,
+                         lam_p=1.0, lam_v=1.0):
     adam = Adam(lr=lr)
     best = (float("inf"), None, None)
     for t in range(iters):
@@ -1638,6 +1707,200 @@ def train_agent_adam(params, n, a, base, rot, iters, rng,
             best = (v, centers.copy(), thetas.copy())
     return best
 
+
+
+_train_agent_adam_nb = None
+if _HAS_NUMBA:
+    @_numba.njit(cache=True)
+    def _train_agent_adam_nb(E, W1, b1, W2a, b2, W3, b3,
+                             base_c, base_t, n, a, rot, iters,
+                             tau0, tau_min, lr, lam_p, lam_v,
+                             cs, cc, r, area_lb):
+        """Entraînement Deep-Set + Adam entièrement natif.
+
+        Le forward, le backward, la perte et la mise à jour Adam sont fusionnés
+        dans une seule fonction JIT. Les paramètres sont modifiés en place.
+        """
+        max_slots, de = E.shape
+        nin, H = W1.shape
+        H2 = W2a.shape[1]
+
+        mE = np.zeros_like(E); vE = np.zeros_like(E)
+        mW1 = np.zeros_like(W1); vW1 = np.zeros_like(W1)
+        mb1 = np.zeros_like(b1); vb1 = np.zeros_like(b1)
+        mW2a = np.zeros_like(W2a); vW2a = np.zeros_like(W2a)
+        mb2 = np.zeros_like(b2); vb2 = np.zeros_like(b2)
+        mW3 = np.zeros_like(W3); vW3 = np.zeros_like(W3)
+        mb3 = np.zeros_like(b3); vb3 = np.zeros_like(b3)
+
+        X = np.empty((n, nin))
+        B = np.empty((n, 3))
+        for i in range(n):
+            B[i, 0] = base_c[i, 0] / 8.0
+            B[i, 1] = base_c[i, 1] / 8.0
+            B[i, 2] = base_t[i] / 8.0
+        feat = np.empty(5)
+        feat[0] = n / 64.0
+        feat[1] = math.sqrt(n) / 8.0
+        feat[2] = a / 8.0
+        feat[3] = (a - area_lb) / 8.0
+        feat[4] = 1.0
+        for i in range(n):
+            for j in range(5):
+                X[i, de + j] = feat[j]
+            for j in range(3):
+                X[i, de + 5 + j] = B[i, j]
+
+        best_v = 1e300
+        best_c = np.empty((n, 2))
+        best_th = np.empty(n)
+        t = 0
+        for it in range(iters):
+            tau = max(tau_min, tau0 * (tau_min / tau0) ** (it / max(1, iters - 1)))
+            for i in range(n):
+                for j in range(de):
+                    X[i, j] = E[i, j]
+
+            Z1 = X @ W1
+            for i in range(n):
+                for j in range(H):
+                    Z1[i, j] += b1[j]
+            Hh = np.tanh(Z1)
+            G = np.empty(H)
+            for j in range(H):
+                s = 0.0
+                for i in range(n):
+                    s += Hh[i, j]
+                G[j] = s / n
+            Oin = np.empty((n, 2 * H))
+            for i in range(n):
+                for j in range(H):
+                    Oin[i, j] = Hh[i, j]
+                    Oin[i, H + j] = G[j]
+            Z2 = Oin @ W2a
+            for i in range(n):
+                for j in range(H2):
+                    Z2[i, j] += b2[j]
+            A2 = np.tanh(Z2)
+            O = A2 @ W3
+            for i in range(n):
+                for j in range(3):
+                    O[i, j] += b3[j]
+
+            centers = np.empty((n, 2))
+            thetas = np.empty(n)
+            for i in range(n):
+                centers[i, 0] = base_c[i, 0] + O[i, 0]
+                centers[i, 1] = base_c[i, 1] + O[i, 1]
+                thetas[i] = base_t[i] + (O[i, 2] if rot else 0.0)
+
+            L, dc, dt = _loss_and_backward_nb(
+                centers, thetas, a, tau, lam_p, lam_v, cs, cc, r)
+            dO = np.empty((n, 3))
+            for i in range(n):
+                dO[i, 0] = dc[i, 0]
+                dO[i, 1] = dc[i, 1]
+                dO[i, 2] = dt[i]
+
+            dW3 = A2.T @ dO
+            db3 = np.empty(3)
+            for j in range(3):
+                s = 0.0
+                for i in range(n):
+                    s += dO[i, j]
+                db3[j] = s
+            dH2 = dO @ W3.T
+            dZ2 = dH2 * (1.0 - A2 * A2)
+            dW2a = Oin.T @ dZ2
+            db2 = np.empty(H2)
+            for j in range(H2):
+                s = 0.0
+                for i in range(n):
+                    s += dZ2[i, j]
+                db2[j] = s
+            dOin = dZ2 @ W2a.T
+            dH1 = np.empty((n, H))
+            for i in range(n):
+                for j in range(H):
+                    dH1[i, j] = dOin[i, j]
+            dG = np.empty(H)
+            for j in range(H):
+                s = 0.0
+                for i in range(n):
+                    s += dOin[i, H + j]
+                dG[j] = s
+            for i in range(n):
+                for j in range(H):
+                    dH1[i, j] += dG[j] / n
+            dZ = dH1 * (1.0 - Hh * Hh)
+            dW1 = X.T @ dZ
+            db1 = np.empty(H)
+            for j in range(H):
+                s = 0.0
+                for i in range(n):
+                    s += dZ[i, j]
+                db1[j] = s
+            dX = dZ @ W1.T
+            dE = np.zeros_like(E)
+            for i in range(n):
+                for j in range(de):
+                    dE[i, j] = dX[i, j]
+
+            v = _exact_violation_nb(centers, thetas, a, cs, cc, r)
+            if v < best_v:
+                best_v = v
+                for i in range(n):
+                    best_c[i, 0] = centers[i, 0]
+                    best_c[i, 1] = centers[i, 1]
+                    best_th[i] = thetas[i]
+
+            t += 1
+            b1pow = 1.0 - 0.9 ** t
+            b2pow = 1.0 - 0.999 ** t
+            _adam_update_2d(E, dE, mE, vE, b1pow, b2pow, lr, 0.9, 0.999, 1e-8)
+            _adam_update_2d(W1, dW1, mW1, vW1, b1pow, b2pow, lr, 0.9, 0.999, 1e-8)
+            _adam_update_1d(b1, db1, mb1, vb1, b1pow, b2pow, lr, 0.9, 0.999, 1e-8)
+            _adam_update_2d(W2a, dW2a, mW2a, vW2a, b1pow, b2pow, lr, 0.9, 0.999, 1e-8)
+            _adam_update_1d(b2, db2, mb2, vb2, b1pow, b2pow, lr, 0.9, 0.999, 1e-8)
+            _adam_update_2d(W3, dW3, mW3, vW3, b1pow, b2pow, lr, 0.9, 0.999, 1e-8)
+            _adam_update_1d(b3, db3, mb3, vb3, b1pow, b2pow, lr, 0.9, 0.999, 1e-8)
+        return best_v, best_c, best_th
+
+
+def train_agent_adam(params, n, a, base, rot, iters, rng,
+                     tau0=0.05, tau_min=1e-4, lr=1e-2, lam_p=1.0, lam_v=1.0):
+    """Entraîne l'agent (version JIT si numba est disponible)."""
+    if _HAS_NUMBA and _train_agent_adam_nb is not None and iters > 0:
+        E = np.ascontiguousarray(params["E"], dtype=np.float64)
+        W1 = np.ascontiguousarray(params["W1"], dtype=np.float64)
+        b1 = np.ascontiguousarray(params["b1"], dtype=np.float64)
+        W2a = np.ascontiguousarray(params["W2a"], dtype=np.float64)
+        b2 = np.ascontiguousarray(params["b2"], dtype=np.float64)
+        W3 = np.ascontiguousarray(params["W3"], dtype=np.float64)
+        b3 = np.ascontiguousarray(params["b3"], dtype=np.float64)
+        base_c = np.ascontiguousarray(base[0], dtype=np.float64)
+        base_t = np.ascontiguousarray(base[1], dtype=np.float64)
+        best = _train_agent_adam_nb(
+            E, W1, b1, W2a, b2, W3, b3, base_c, base_t,
+            int(n), float(a), bool(rot), int(iters),
+            float(tau0), float(tau_min), float(lr), float(lam_p), float(lam_v),
+            int(_CIRC_SHAPE), int(_CIRC_CONT), float(_R),
+            float(area_lower_bound(n)))
+        # Les tableaux peuvent avoir été copiés par ascontiguousarray : on
+        # réinjecte dans le dictionnaire pour garder l'API existante.
+        params["E"][...] = E
+        params["W1"][...] = W1
+        params["b1"][...] = b1
+        params["W2a"][...] = W2a
+        params["b2"][...] = b2
+        params["W3"][...] = W3
+        params["b3"][...] = b3
+        return best
+    if iters <= 0:
+        return float("inf"), None, None
+    return _train_agent_adam_np(params, n, a, base, rot, iters, rng,
+                                tau0=tau0, tau_min=tau_min, lr=lr,
+                                lam_p=lam_p, lam_v=lam_v)
 
 def train_agent_es(params, n, a, base, rot, iters, rng,
                    pop=16, sigma=0.05, lr=3e-2, lam_p=1.0, lam_v=1.0):
@@ -1751,6 +2014,215 @@ def tighten_a(centers, thetas, a):
         return R, c2, thetas
     return a, centers, thetas
 
+
+
+_snap_gn_nb = None
+if _HAS_NUMBA:
+    @_numba.njit(cache=True)
+    def _sgrad_nb(al):
+        ca, sa = math.cos(al), math.sin(al)
+        if abs(ca) < 1e-12:
+            sga = 0.0
+        else:
+            sga = 1.0 if ca > 0.0 else -1.0
+        if abs(sa) < 1e-12:
+            sgb = 0.0
+        else:
+            sgb = 1.0 if sa > 0.0 else -1.0
+        return 0.5 * (-sga * sa + sgb * ca)
+
+    @_numba.njit(cache=True)
+    def _snap_point(i, q, c2, th, cs, r):
+        if cs:
+            ox, oy = OFF[q, 0], OFF[q, 1]
+            ti = th[i]
+            ct, st = math.cos(ti), math.sin(ti)
+            return c2[i, 0] + ox * ct - oy * st, c2[i, 1] + ox * st + oy * ct
+        return c2[i, 0] + r * CARD[q, 0], c2[i, 1] + r * CARD[q, 1]
+
+    @_numba.njit(cache=True)
+    def _snap_resid_nb(x, th_fixed, rot, a, cs, cc, r,
+                       gi, gj, gk, bi, bq, bd, bt, ri, rq, rci):
+        n = th_fixed.size
+        c2 = x[:2 * n].reshape(n, 2)
+        th = x[2 * n:] if rot else th_fixed
+        ng, nb, nr, nrc = gi.size, bi.size, ri.size, rci.size
+        out = np.empty(ng + nb + nr + nrc)
+        for e in range(ng):
+            i, j, k = gi[e], gj[e], gk[e]
+            dx, dy = c2[j, 0] - c2[i, 0], c2[j, 1] - c2[i, 1]
+            if cs:
+                if k < 2:
+                    phi = th[i] + (HALF_PI if k % 2 else 0.0)
+                else:
+                    phi = th[j] + (HALF_PI if k % 2 else 0.0)
+                ux, uy = math.cos(phi), math.sin(phi)
+                p = dx * ux + dy * uy
+                ai, aj = th[i] - phi, th[j] - phi
+                out[e] = abs(p) - _support_nb(ai) - _support_nb(aj)
+            else:
+                out[e] = math.hypot(dx, dy) - 2.0 * r
+        pos = ng
+        for e in range(nb):
+            vx, vy = _snap_point(bi[e], bq[e], c2, th, cs, r)
+            if bd[e] == 0:
+                out[pos + e] = vx - bt[e]
+            else:
+                out[pos + e] = vy - bt[e]
+        pos += nb
+        for e in range(nr):
+            vx, vy = _snap_point(ri[e], rq[e], c2, th, cs, r)
+            out[pos + e] = math.hypot(vx, vy) - a
+        pos += nr
+        for e in range(nrc):
+            i = rci[e]
+            out[pos + e] = math.hypot(c2[i, 0], c2[i, 1]) + r - a
+        return out
+
+    @_numba.njit(cache=True)
+    def _snap_jac_nb(x, th_fixed, rot, a, cs, cc, r,
+                     gi, gj, gk, bi, bq, bd, bt, ri, rq, rci):
+        n = th_fixed.size
+        c2 = x[:2 * n].reshape(n, 2)
+        th = x[2 * n:] if rot else th_fixed
+        ng, nb, nr, nrc = gi.size, bi.size, ri.size, rci.size
+        m = ng + nb + nr + nrc
+        nv = 2 * n + (n if rot else 0)
+        J = np.zeros((m, nv))
+        for e in range(ng):
+            i, j, k = gi[e], gj[e], gk[e]
+            dx, dy = c2[j, 0] - c2[i, 0], c2[j, 1] - c2[i, 1]
+            if cs:
+                if k < 2:
+                    phi = th[i] + (HALF_PI if k % 2 else 0.0)
+                else:
+                    phi = th[j] + (HALF_PI if k % 2 else 0.0)
+                ux, uy = math.cos(phi), math.sin(phi)
+                p = dx * ux + dy * uy
+                if p == 0.0:
+                    s = 0.0
+                elif p > 0.0:
+                    s = 1.0
+                else:
+                    s = -1.0
+                dphi = -dx * uy + dy * ux
+                hpi = _sgrad_nb(th[i] - phi)
+                hpj = _sgrad_nb(th[j] - phi)
+                J[e, 2 * i] += -s * ux
+                J[e, 2 * i + 1] += -s * uy
+                J[e, 2 * j] += s * ux
+                J[e, 2 * j + 1] += s * uy
+                if rot:
+                    if k < 2:
+                        J[e, 2 * n + i] += s * dphi + hpj
+                        J[e, 2 * n + j] += -hpj
+                    else:
+                        J[e, 2 * n + i] += -hpi
+                        J[e, 2 * n + j] += s * dphi + hpi
+            else:
+                dist = math.hypot(dx, dy)
+                if dist < 1e-15:
+                    dist = 1e-15
+                nx, ny = dx / dist, dy / dist
+                J[e, 2 * i] += -nx
+                J[e, 2 * i + 1] += -ny
+                J[e, 2 * j] += nx
+                J[e, 2 * j + 1] += ny
+        pos = ng
+        for e in range(nb):
+            i, q, cd = bi[e], bq[e], bd[e]
+            if cs:
+                ox, oy = OFF[q, 0], OFF[q, 1]
+                ti = th[i]
+                ct, st = math.cos(ti), math.sin(ti)
+                J[pos + e, 2 * i + cd] += 1.0
+                if rot:
+                    if cd == 0:
+                        J[pos + e, 2 * n + i] += -ox * st - oy * ct
+                    else:
+                        J[pos + e, 2 * n + i] += ox * ct - oy * st
+            else:
+                J[pos + e, 2 * i + cd] += 1.0
+        pos += nb
+        for e in range(nr):
+            i, q = ri[e], rq[e]
+            ox, oy = OFF[q, 0], OFF[q, 1]
+            ti = th[i]
+            ct, st = math.cos(ti), math.sin(ti)
+            vx = c2[i, 0] + ox * ct - oy * st
+            vy = c2[i, 1] + ox * st + oy * ct
+            nv_v = math.hypot(vx, vy)
+            if nv_v < 1e-15:
+                nv_v = 1e-15
+            nx, ny = vx / nv_v, vy / nv_v
+            J[pos + e, 2 * i] += nx
+            J[pos + e, 2 * i + 1] += ny
+            if rot:
+                J[pos + e, 2 * n + i] += nx * (-ox * st - oy * ct) + ny * (ox * ct - oy * st)
+        pos += nr
+        for e in range(nrc):
+            i = rci[e]
+            cx, cy = c2[i, 0], c2[i, 1]
+            nc = math.hypot(cx, cy)
+            if nc < 1e-15:
+                nc = 1e-15
+            J[pos + e, 2 * i] += cx / nc
+            J[pos + e, 2 * i + 1] += cy / nc
+        return J
+
+    @_numba.njit(cache=True)
+    def _snap_gn_nb(c0, th0, a, rot, cs, cc, r,
+                    gi, gj, gk, bi, bq, bd, bt, ri, rq, rci,
+                    max_iter=40):
+        n = th0.size
+        nv = 2 * n + (n if rot else 0)
+        x = np.empty(nv)
+        for i in range(n):
+            x[2 * i] = c0[i, 0]
+            x[2 * i + 1] = c0[i, 1]
+            if rot:
+                x[2 * n + i] = th0[i]
+        th_fixed = th0
+        rvec = _snap_resid_nb(x, th_fixed, rot, a, cs, cc, r,
+                              gi, gj, gk, bi, bq, bd, bt, ri, rq, rci)
+        if rvec.size == 0:
+            return x
+        cost = 0.0
+        for i in range(rvec.size):
+            cost += rvec[i] * rvec[i]
+        lam = 1e-3
+        for it in range(max_iter):
+            J = _snap_jac_nb(x, th_fixed, rot, a, cs, cc, r,
+                             gi, gj, gk, bi, bq, bd, bt, ri, rq, rci)
+            A = J.T @ J
+            gvec = J.T @ rvec
+            for i in range(nv):
+                A[i, i] += lam * (A[i, i] + 1e-12) + 1e-12
+            dx = np.linalg.solve(A, -gvec)
+            xn = x + dx
+            rn = _snap_resid_nb(xn, th_fixed, rot, a, cs, cc, r,
+                                gi, gj, gk, bi, bq, bd, bt, ri, rq, rci)
+            costn = 0.0
+            for i in range(rn.size):
+                costn += rn[i] * rn[i]
+            if costn < cost:
+                x = xn
+                rvec = rn
+                cost = costn
+                lam *= 0.3
+                if lam < 1e-12:
+                    lam = 1e-12
+                dmax = 0.0
+                for i in range(nv):
+                    if abs(dx[i]) > dmax:
+                        dmax = abs(dx[i])
+                if dmax < 1e-12:
+                    break
+            else:
+                lam *= 10.0
+                if lam > 1e12:
+                    break
+        return x
 
 def snap_config(centers, thetas, a, rot=True, tol=8e-3, max_eq=800):
     """Ajustement des contacts actifs par moindres carrés (Levenberg-Marquardt).
@@ -1965,13 +2437,33 @@ def snap_config(centers, thetas, a, rot=True, tol=8e-3, max_eq=800):
 
         x0 = np.concatenate([c_cur.ravel(),
                              th_cur.copy() if rot else np.zeros(0)])
-        try:
-            sol = least_squares(resid, x0, jac=jac, method="trf",
-                                xtol=1e-11, ftol=1e-11, gtol=1e-11,
-                                max_nfev=120)
-        except Exception:
-            break
-        c2, th2 = unpack(sol.x)
+        x_sol = None
+        # Le solveur JIT est dense : excellent pour les tailles courantes,
+        # mais scipy reste plus adapté aux très gros systèmes creux.
+        if (_HAS_NUMBA and _snap_gn_nb is not None
+                and nv * len(eqs) <= 150000):
+            try:
+                xj = _snap_gn_nb(
+                    np.ascontiguousarray(c_cur, dtype=np.float64),
+                    np.ascontiguousarray(th_cur, dtype=np.float64),
+                    float(a), bool(rot), bool(c['sqs']), bool(c['cis']),
+                    float(c['r']), gi, gj, gk, bi, bq, bd, bt, ri, rq, rci,
+                    35)
+                cj, thj = unpack(xj)
+                vj = exact_violation(cj, thj, a)
+                if vj <= FEAS_TOL or vj < v_cur:
+                    x_sol = xj
+            except Exception:
+                x_sol = None
+        if x_sol is None:
+            try:
+                sol = least_squares(resid, x0, jac=jac, method="trf",
+                                    xtol=1e-11, ftol=1e-11, gtol=1e-11,
+                                    max_nfev=120)
+            except Exception:
+                break
+            x_sol = sol.x
+        c2, th2 = unpack(x_sol)
         v2 = exact_violation(c2, th2, a)
         if v2 <= FEAS_TOL:
             # Même quand la config était déjà valide, on accepte le résultat
@@ -2087,6 +2579,105 @@ def scipy_refine(centers, thetas, a, rot=True, iters=40, tau=1e-6,
     th2 = x[2 * n:] if rot else thetas
     return exact_violation(c2, th2, a), c2, th2
 
+
+
+_polish_phases_nb = None
+if _HAS_NUMBA:
+    @_numba.njit(cache=True)
+    def _polish_phases_nb(centers, thetas, a, iters, rot, lr, tau0, tau_min,
+                           lam_p, lam_v, hard_iters, cs, cc, r):
+        """Deux phases de polissage (lisse puis dure) en une boucle native."""
+        n = centers.shape[0]
+        var = np.empty(3 * n)
+        for i in range(n):
+            var[2 * i] = centers[i, 0]
+            var[2 * i + 1] = centers[i, 1]
+            var[2 * n + i] = thetas[i] if rot else 0.0
+
+        best_v = 1e300
+        best_c = np.empty((n, 2))
+        best_th = np.empty(n)
+        for i in range(n):
+            best_c[i, 0] = centers[i, 0]
+            best_c[i, 1] = centers[i, 1]
+            best_th[i] = thetas[i] if rot else 0.0
+
+        m = np.zeros(3 * n)
+        v = np.zeros(3 * n)
+        t = 0
+        for it in range(iters):
+            tau = max(tau_min, tau0 * (tau_min / tau0) ** (it / max(1, iters - 1)))
+            c = var[:2 * n].reshape(n, 2)
+            th = var[2 * n:]
+            L, dc, dt = _loss_and_backward_nb(
+                c, th, a, tau, lam_p, lam_v, cs, cc, r)
+            gvar = np.empty(3 * n)
+            for i in range(n):
+                gvar[2 * i] = dc[i, 0]
+                gvar[2 * i + 1] = dc[i, 1]
+                gvar[2 * n + i] = dt[i] if rot else 0.0
+            t += 1
+            _adam_update_1d(var, gvar, m, v, 1.0 - 0.9 ** t,
+                            1.0 - 0.999 ** t, lr, 0.9, 0.999, 1e-8)
+            c = var[:2 * n].reshape(n, 2)
+            th = var[2 * n:]
+            vv = _exact_violation_nb(c, th, a, cs, cc, r)
+            if vv < best_v:
+                best_v = vv
+                for i in range(n):
+                    best_c[i, 0] = c[i, 0]
+                    best_c[i, 1] = c[i, 1]
+                    best_th[i] = th[i]
+
+        # phase dure : on repart du meilleur point, moments Adam remis à zéro
+        for i in range(n):
+            var[2 * i] = best_c[i, 0]
+            var[2 * i + 1] = best_c[i, 1]
+            var[2 * n + i] = best_th[i] if rot else 0.0
+        for i in range(3 * n):
+            m[i] = 0.0
+            v[i] = 0.0
+        t = 0
+        for it in range(hard_iters):
+            c = var[:2 * n].reshape(n, 2)
+            th = var[2 * n:]
+            L, dc, dt = _loss_and_backward_nb(
+                c, th, a, 1e-9, lam_p, lam_v, cs, cc, r)
+            gvar = np.empty(3 * n)
+            for i in range(n):
+                gvar[2 * i] = dc[i, 0]
+                gvar[2 * i + 1] = dc[i, 1]
+                gvar[2 * n + i] = dt[i] if rot else 0.0
+            t += 1
+            _adam_update_1d(var, gvar, m, v, 1.0 - 0.9 ** t,
+                            1.0 - 0.999 ** t, lr * 0.5, 0.9, 0.999, 1e-8)
+            c = var[:2 * n].reshape(n, 2)
+            th = var[2 * n:]
+            vv = _exact_violation_nb(c, th, a, cs, cc, r)
+            if vv < best_v:
+                best_v = vv
+                for i in range(n):
+                    best_c[i, 0] = c[i, 0]
+                    best_c[i, 1] = c[i, 1]
+                    best_th[i] = th[i]
+        return best_v, best_c, best_th
+
+
+def polish(cfg, a, iters, rng, rot=True, lr=3e-3, tau0=1e-3, tau_min=1e-5,
+           lam_p=1.0, lam_v=1.0, hard_iters=120):
+    if _HAS_NUMBA and _polish_phases_nb is not None:
+        c0 = np.ascontiguousarray(cfg[0], dtype=np.float64).copy()
+        th0 = np.ascontiguousarray(cfg[1], dtype=np.float64).copy()
+        best = _polish_phases_nb(
+            c0, th0, float(a), int(iters), bool(rot), float(lr),
+            float(tau0), float(tau_min), float(lam_p), float(lam_v),
+            int(hard_iters), int(_CIRC_SHAPE), int(_CIRC_CONT), float(_R))
+        if best[0] > 0.0:
+            r = scipy_refine(best[1], best[2], a, rot=rot, tau=tau_min,
+                             lam_p=lam_p, lam_v=lam_v)
+            if r is not None and r[0] < best[0]:
+                best = r
+        return best
 
 def polish(cfg, a, iters, rng, rot=True, lr=3e-3, tau0=1e-3, tau_min=1e-5,
            lam_p=1.0, lam_v=1.0, hard_iters=120):
