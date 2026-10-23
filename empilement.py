@@ -46,7 +46,7 @@ Méthode
 
 Parallélisme : agents, polissages et trempe sont répartis sur un pool de
 processus (--workers). --spec K lance K essais spéculatifs pendant la
-descente ; --runs K lance K runs multi-graines et retient le meilleur.
+descente ; --runs K lance K runs multi-graines successifs et retient le meilleur.
 
 RÈGLES D'ENREGISTREMENT (solution_acceptable) — une solution refusée n'est
 NI enregistrée NI générée :
@@ -230,19 +230,6 @@ def _pmap(fn, tasks):
     if _POOL is None or _IN_WORKER or len(tasks) <= 1:
         return [fn(t) for t in tasks]
     return _POOL.map(fn, tasks, chunksize=1)
-
-
-def _pmap_iter(fn, tasks):
-    """Variante itérable de `_pmap`, pour mettre à jour une barre tqdm.
-
-    Les résultats arrivent au fur et à mesure (ordre conservé avec `imap`),
-    au lieu d'attendre la fin de tous les runs."""
-    tasks = list(tasks)
-    if _POOL is None or _IN_WORKER or len(tasks) <= 1:
-        for t in tasks:
-            yield fn(t)
-        return
-    yield from _POOL.imap(fn, tasks, chunksize=1)
 
 
 # ===========================================================================
@@ -2417,23 +2404,11 @@ def _attempt_worker(task):
     return attempt(n, a, rr, **kw)
 
 
-def _run_worker(task):
-    """Tâche parallèle (B4) : UN run indépendant de estimate_C (--runs K).
-
-    Chaque run a sa propre graine et tourne séquentiellement dans son worker
-    (spec forcé à 1 : deux niveaux de parallélisation se nuiraient)."""
-    global _IN_WORKER
-    (n, seed, kw) = task
-    _IN_WORKER = True
-    rr = np.random.default_rng(int(seed))
-    kw = dict(kw, spec=1, quiet=True)
-    return estimate_C(n, rr, **kw)
-
-
 def estimate_C(n, rng, tol=2e-3, agents=6, iters=250, polish_iters=300,
                rot=True, opt="adam", max_slots=64, quiet=False,
                anneal_iters=1500, kicks=3, arch="set", spec=1,
-               time_budget=0.0):
+               time_budget=0.0, bar_position=None, bar_leave=True,
+               bar_desc=None):
     """Estime C(n) par curricula (descente de a) + bissection, avec CERTIF.
 
     À chaque essai on ne se fie pas seulement à la violation résiduelle de
@@ -2453,6 +2428,8 @@ def estimate_C(n, rng, tol=2e-3, agents=6, iters=250, polish_iters=300,
     - `time_budget` : budget par n en secondes (0 = illimité).  À l'expiration
       on renvoie le meilleur certificat déjà obtenu (le raffinement final est
       interrompu entre deux petits essais).
+    - `bar_position`, `bar_leave`, `bar_desc` : contrôle de la barre tqdm
+      (utile pour afficher la barre globale des runs et celle du run courant).
     """
     t0 = time.time()
     deadline = (t0 + float(time_budget)
@@ -2473,8 +2450,13 @@ def estimate_C(n, rng, tol=2e-3, agents=6, iters=250, polish_iters=300,
 
     bar = None
     if not quiet:
-        bar = tqdm(total=None, desc=f"recherche C({n})", unit="essai",
-                   dynamic_ncols=True, leave=True, file=sys.stdout)
+        # Le nombre exact d'essais n'est pas connu à l'avance. On part d'une
+        # estimation raisonnable ; la barre s'allonge si nécessaire, puis sa
+        # borne est calée sur le nombre réel d'essais à la fin (100 %).
+        bar_total = max(10, 4 + 2 * max(1, int(spec)))
+        bar = tqdm(total=bar_total, desc=bar_desc or f"recherche C({n})",
+                   unit="essai", dynamic_ncols=True, leave=bar_leave,
+                   file=sys.stdout, position=bar_position)
 
         def log(*x):
             bar.write(" ".join(str(v) for v in x))
@@ -2513,6 +2495,11 @@ def estimate_C(n, rng, tol=2e-3, agents=6, iters=250, polish_iters=300,
         if len(champs) > 14:            # borne le coût des essais suivants
             del champs[1:3]             # (champs[0] = grille, jamais virée)
         if bar is not None:
+            if bar.n >= bar.total:
+                # L'estimation initiale était trop basse : on allonge la
+                # barre avant l'essai suivant, sans afficher un faux 100 %.
+                bar.total = bar.n + max(5, 2 * max(1, int(spec)) + 1)
+                bar.refresh()
             bar.update(1)
             bar.set_postfix_str(
                 f"a={a_test:.4f} viol={v:.1e} best={best_a:.5f}")
@@ -2682,6 +2669,11 @@ def estimate_C(n, rng, tol=2e-3, agents=6, iters=250, polish_iters=300,
         log("  budget de temps écoulé : meilleur certificat conservé")
     log(f"  -> C({n}) <= {best_a:.6f}   (certifié, {dt:.1f} s)")
     if bar is not None:
+        # La recherche est finie : on cale la borne sur le nombre réel
+        # d'essais pour que la barre affiche bien 100 %.
+        if bar.n > 0:
+            bar.total = bar.n
+        bar.refresh()
         bar.close()
     return best_a, best_cfg, history, dt
 
@@ -2910,8 +2902,9 @@ def main(argv=None):
                          "conservative avec K>1 sur n=26), K>1 = sondes "
                          "légères groupées (expérimental)")
     ap.add_argument("--runs", type=int, default=1,
-                    help="runs indépendants multi-graines en parallèle (B4) ; "
-                         "le meilleur résultat est conservé")
+                    help="runs indépendants multi-graines, exécutés l'un "
+                         "après l'autre (barre globale + barre du run "
+                         "courant) ; le meilleur résultat est conservé")
     ap.add_argument("--time-budget", type=float, default=0.0, metavar="SEC",
                     help="budget de temps PAR n en secondes (0 = illimité). "
                          "À l'expiration, le meilleur empilement déjà certifié "
@@ -2983,22 +2976,26 @@ def main(argv=None):
                   max_slots=args.max_slots, anneal_iters=args.anneal_iters,
                   kicks=args.kicks, arch="set", time_budget=args.time_budget)
     if args.runs > 1:
-        # B4 : runs indépendants multi-graines EN PARALLÈLE — chacun
-        # tourne séquentiellement dans son worker (spec=1 imposé par
-        # _run_worker : deux niveaux de parallélisation se nuiraient).
-        tasks = [(n, args.seed + 977 * r, est_kw)
-                 for r in range(args.runs)]
-        bar = tqdm(total=args.runs, desc=f"runs C({n})", unit="run",
-                   dynamic_ncols=True, leave=True, file=sys.stdout)
+        # B4 : runs indépendants multi-graines.  Ils sont exécutés l'un
+        # après l'autre pour que la barre du run courant reste lisible ;
+        # le parallélisme interne (agents, polissages, --workers) reste actif.
+        bar_runs = tqdm(total=args.runs, desc=f"runs C({n})", unit="run",
+                        dynamic_ncols=True, leave=True, file=sys.stdout,
+                        position=0)
         results = []
         try:
-            for res in _pmap_iter(_run_worker, tasks):
+            for r in range(args.runs):
+                rr = np.random.default_rng(args.seed + 977 * r)
+                res = estimate_C(
+                    n, rr, **est_kw,
+                    bar_desc=f"run {r + 1}/{args.runs} C({n})",
+                    bar_position=1, bar_leave=False)
                 results.append(res)
                 best_so_far = min(results, key=lambda t: t[0])[0]
-                bar.set_postfix_str(f"meilleur={best_so_far:.6f}")
-                bar.update(1)
+                bar_runs.set_postfix_str(f"meilleur={best_so_far:.6f}")
+                bar_runs.update(1)
         finally:
-            bar.close()
+            bar_runs.close()
         for i, (ra, _rc, _rh, rdt) in enumerate(results):
             print(f"  run {i + 1}/{args.runs} : C({n}) <= {ra:.6f}  "
                   f"({rdt:.1f} s)")
