@@ -232,6 +232,19 @@ def _pmap(fn, tasks):
     return _POOL.map(fn, tasks, chunksize=1)
 
 
+def _pmap_iter(fn, tasks):
+    """Variante itérable de `_pmap`, pour mettre à jour une barre tqdm.
+
+    Les résultats arrivent au fur et à mesure (ordre conservé avec `imap`),
+    au lieu d'attendre la fin de tous les runs."""
+    tasks = list(tasks)
+    if _POOL is None or _IN_WORKER or len(tasks) <= 1:
+        for t in tasks:
+            yield fn(t)
+        return
+    yield from _POOL.imap(fn, tasks, chunksize=1)
+
+
 # ===========================================================================
 #  Géométrie : fonctions de support, perte lisse + gradients analytiques
 # ===========================================================================
@@ -2975,7 +2988,17 @@ def main(argv=None):
         # _run_worker : deux niveaux de parallélisation se nuiraient).
         tasks = [(n, args.seed + 977 * r, est_kw)
                  for r in range(args.runs)]
-        results = _pmap(_run_worker, tasks)
+        bar = tqdm(total=args.runs, desc=f"runs C({n})", unit="run",
+                   dynamic_ncols=True, leave=True, file=sys.stdout)
+        results = []
+        try:
+            for res in _pmap_iter(_run_worker, tasks):
+                results.append(res)
+                best_so_far = min(results, key=lambda t: t[0])[0]
+                bar.set_postfix_str(f"meilleur={best_so_far:.6f}")
+                bar.update(1)
+        finally:
+            bar.close()
         for i, (ra, _rc, _rh, rdt) in enumerate(results):
             print(f"  run {i + 1}/{args.runs} : C({n}) <= {ra:.6f}  "
                   f"({rdt:.1f} s)")
