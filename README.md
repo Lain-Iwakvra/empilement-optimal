@@ -48,7 +48,14 @@ resultats/figures/empilement_n<n>_<mode>.png
 Les solutions refusées ne produisent aucun fichier :
 
 - côté entier en mode carré dans carré ;
-- cas `n = k² + 1` au-dessus de la borne `k + √2/2`.
+- cas `n = k² + 1` au-dessus de la borne `k + √2/2`, lorsque la
+  construction exacte de Göbel n'est pas disponible (par exemple avec
+  `--no-rotate`).
+
+En revanche, si `n = k² + 1` et que la recherche dépasse la borne
+`k + √2/2`, le programme n'abandonne plus : il enregistre la construction
+exacte de Göbel **au côté de la borne** (si les rotations sont autorisées),
+avec la figure correspondante.
 
 ## Constructions et bornes (DS7)
 

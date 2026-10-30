@@ -65,7 +65,10 @@ RÈGLES D'ENREGISTREMENT (solution_acceptable) — une solution refusée n'est
 NI enregistrée NI générée :
   1. solution SUR GRILLE : côté `a` entier (n = k², k²-1, ...) -> rien ;
   2. cas n = k²+1 : borne maximale k + √2/2 (ex. n = 37 -> 6.707107) ;
-     toute solution au-dessus est refusée.
+     une solution au-dessus est remplacée par la construction exacte de
+     Göbel AU CÔTÉ DE LA BORNE (si les rotations sont autorisées), donc
+     elle est enregistrée ; refus seulement si cette construction n'est
+     pas disponible.
 
 Sortie
 ------
@@ -149,6 +152,30 @@ def solution_acceptable(n, a, tol=1e-6):
                        f"ni généré")
     return True, ""
 
+
+def max_bound_config(n, rot=True):
+    """Empilement exact à la borne maximale k + √2/2 (n = k²+1).
+
+    Repli utilisé quand la recherche renvoie un côté supérieur à la borne :
+    on enregistre alors la construction de Göbel au côté de la borne plutôt
+    que de ne rien produire.  Renvoie (a, centres, thetas), ou None si la
+    construction n'est pas disponible (k < 2, rotations interdites) ou n'est
+    pas certifiable.
+    """
+    b = bound_k2_plus1(n)
+    if b is None or not rot:
+        return None
+    k = math.isqrt(n)
+    if k < 2:
+        return None
+    try:
+        c, t = _gobel_core(k)
+        a, c, t = certify(c, t, b, rot)
+    except Exception:
+        return None
+    if a > b + 1e-9 or exact_violation(c, t, a) > FEAS_TOL:
+        return None
+    return a, c, t
 
 
 PACK = "sq_in_sq"
@@ -4019,6 +4046,18 @@ def bench(nmin=1, nmax=10, seed=0, agents=6, iters=250, polish_iters=300,
             anneal_iters=anneal_iters, kicks=kicks,
             arch=arch, spec=spec, time_budget=time_budget,
             extra_champs=tuple(aug_cache.get(n, ())))
+        # --- repli n = k²+1 : si la recherche dépasse la borne k + √2/2,
+        #     on enregistre la construction exacte de Göbel AU CÔTÉ DE LA
+        #     BORNE (plutôt que de tout refuser).
+        b_max = bound_k2_plus1(n)
+        if b_max is not None and a_hat > b_max + 1e-9:
+            repli = max_bound_config(n, rot)
+            if repli is not None:
+                a_trouve = a_hat
+                a_hat, c, th = repli
+                it.write(f"  n = {n:>3} : a trouvé {a_trouve:.6f} > borne "
+                         f"{b_max:.6f} — construction exacte enregistrée "
+                         f"à a = {a_hat:.6f}")
         # --- règles : solution sur grille OU n = k²+1 au-dessus de la borne
         #     k + √2/2 -> RIEN enregistré, RIEN généré
         ok_sol, raison_sol = solution_acceptable(n, a_hat)
@@ -4201,9 +4240,23 @@ def main(argv=None):
     else:
         a_hat, (c, th), hist, dt = estimate_C(n, rng, **est_kw)
 
+    # --- repli n = k²+1 : si la recherche dépasse la borne k + √2/2, on
+    #     enregistre la construction exacte de Göbel au côté de la borne.
+    a_borne_trouvee = None
+    b_max = bound_k2_plus1(n)
+    if b_max is not None and a_hat > b_max + 1e-9:
+        repli = max_bound_config(n, rot)
+        if repli is not None:
+            a_borne_trouvee = a_hat
+            a_hat, c, th = repli
+
     print("-" * 74)
     print(f"meilleure taille de conteneur trouvée : a ≈ {a_hat:.6f}   "
           f"densité = {density(n, a_hat):.4f}   ({dt:.1f} s)")
+    if a_borne_trouvee is not None:
+        print(f"repli sur la borne maximale : a trouvé "
+              f"{a_borne_trouvee:.6f} > {b_max:.6f} — construction exacte "
+              f"de Göbel enregistrée à a = {a_hat:.6f}")
     v = exact_violation(c, th, a_hat)
     print(f"vérification exacte (géométrie interne) : violation = {v:.3e} "
           f"-> {'valide' if v <= FEAS_TOL else 'INVALIDE'}")
