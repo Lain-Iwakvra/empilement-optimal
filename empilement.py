@@ -35,14 +35,27 @@ Méthode
    discrète d'angles (conteneur carré) ; grilles, anneaux concentriques et
    tirages dans le disque (conteneur circulaire).
    Chaque membre est évalué exactement ; les meilleurs sont polis.
-   Pour n = k²+1 (k >= 2), une construction de Göbel généralisée par récurrence
-   fournit un certificat exact au côté k + √2/2.
+   Constructions exactes issues de DS7 (carré dans carré) :
+   - Göbel généralisé pour n = k²+1 (côté k + √2/2) ;
+   - Göbel à bloc b×b tourné pour n = 2q²+2q+b² (côté q+1+b/√2) ;
+   - variante décentrée pour n = 2q²+4q+b²+1 (côté q+3/2+b/√2) ;
+   - Trump (n=11), Bidwell (n=17) ;
+   - augmentation en « L » : n' = n + 2⌊s⌋ + 1 pour un côté s+1.
+   Ces constructions sont certifiées directement, sans essai. Les amorces
+   ciblées des records DS7 (bandes diagonales, Hämäläinen, bandes larges)
+   restent heuristiques : elles ne deviennent des majorants qu'après
+   certification.
 5. Recherche de C(n) : descente géométrique de `a` suivie d'une bissection.
+   La borne basse utilise les minorants publiés de DS7 (et non plus la seule
+   aire), ce qui permet d'afficher un encadrement [minorant, majorant].
    Chaque résultat est CERTIFIÉ rigoureusement :
    - snapping (snap_config) : ajustement des contacts actifs ;
    - dilatation (rescale_to_feasible) : empilement prouvé valide à a' >= a ;
    - resserrement (tighten_a) : conteneur au plus juste du support réel.
    La réponse est donc un MAJORANT RIGOUREUX de C(n).
+   Un balayage d'orientations globales (orientation_refine) et un cache
+   inter-n des augmentations en « L » (mode benchmark) complètent la
+   recherche.
 
 Parallélisme : agents, polissages et trempe sont répartis sur un pool de
 processus (--workers). --spec K lance K essais spéculatifs pendant la
@@ -170,6 +183,56 @@ def area_lower_bound(n):
     return math.sqrt(n * obj / cont)
 
 
+# Minorants publiés dans DS7 (Table 2).  Ils ne servent qu'au mode carré
+# dans carré : bornes basses de bissection, arrêt anticipé et diagnostic.
+# Les bornes exactes des petits n (2, 3, 5, 7, 8, 10, 14, 15, 24, 35) sont
+# des valeurs prouvées par DS7.
+DS7_LOWER_RANGES = (
+    (2, 3, 2.0),
+    (5, 5, 2.0 + HALF_SQRT2),
+    (6, 6, 3.0),
+    (7, 8, 3.0),
+    (10, 10, 3.0 + HALF_SQRT2),
+    (11, 12, 2.0 + 4.0 / math.sqrt(5.0)),
+    (13, 13, 3.8437),
+    (14, 15, 4.0),
+    (17, 18, (40.0 * SQRT2 + 19.0) / 17.0),
+    (19, 20, 6.0 * SQRT2 - 4.0),
+    (21, 21, 4.7438),
+    (22, 22, 2.0 * SQRT2 + 2.0),
+    (23, 24, 5.0),
+    (26, 27, 5.3918),
+    (28, 30, 5.5117),
+    (31, 31, 5.6415),
+    (34, 35, 6.0),
+    (37, 39, 6.3506),
+    (40, 41, 6.4061),
+    (47, 48, 7.0),
+    (50, 53, 7.3174),
+    (62, 63, 8.0),
+    (65, 68, 8.2899),
+    (79, 80, 9.0),
+    (82, 85, 9.2667),
+)
+
+
+def ds7_lower_bound(n):
+    """Meilleur minorant connu de C(n) pour carré dans carré (DS7)."""
+    lb = area_lower_bound(n)
+    for lo, hi, val in DS7_LOWER_RANGES:
+        if lo <= n <= hi:
+            lb = max(lb, val)
+            break
+    return lb
+
+
+def lower_bound(n):
+    """Minorant utilisable par la recherche : DS7 en carré/carré, aire sinon."""
+    if _CIRC_SHAPE or _CIRC_CONT:
+        return area_lower_bound(n)
+    return ds7_lower_bound(n)
+
+
 def density(n, a):
     """Densité (fraction d'aire du conteneur occupée par les objets)."""
     obj = 1.0 if not _CIRC_SHAPE else math.pi * _R * _R
@@ -181,10 +244,17 @@ def initial_upper_bound(n):
     """Taille de conteneur pour laquelle la grille de ceil(√n) objets tient.
 
     Carré : côté ceil(√n) (grille exacte). Cercle : rayon de la grille
-    correspondante, dilatée jusqu'à contenir son point le plus extrême."""
+    correspondante, dilatée jusqu'à contenir son point le plus extrême.
+    En carré/carré, on prend aussi le meilleur côté des constructions
+    exactes connues (Göbel, Trump, Bidwell, augmentations en « L »)."""
     k = max(1, int(math.ceil(math.sqrt(n))))
     if not _CIRC_CONT:
-        return float(k)
+        base = float(k)
+        if not _CIRC_SHAPE:
+            s = best_exact_side(n)
+            if s is not None:
+                base = min(base, float(s))
+        return base
     extent = 0.5 * SQRT2 if not _CIRC_SHAPE else _R
     return (k - 1) * 0.5 * SQRT2 + extent
 
@@ -1337,6 +1407,400 @@ def bidwell_family(n, a, rng, rot=True):
     if g2 is not None:
         fam.append(g2)
     return fam
+
+
+# ---------------------------------------------------------------------------
+#  Constructions exactes supplémentaires (DS7) : Göbel « bloc tourné »,
+#  augmentation en « L », puis amorces ciblées pour les records de DS7.
+# ---------------------------------------------------------------------------
+
+def _gobel_block_params(n):
+    """Paramètres (q, b) de Göbel : n = 2q² + 2q + b², q-1 < b/√2 < q+1."""
+    out = []
+    for q in range(1, int(math.isqrt(n)) + 1):
+        for b in range(1, int(math.isqrt(n)) + 1):
+            if 2 * q * q + 2 * q + b * b != n:
+                continue
+            if (q - 1) < b / SQRT2 < (q + 1):
+                out.append((q, b))
+    out.sort(key=lambda qb: qb[0] + 1 + qb[1] / SQRT2)
+    return out
+
+
+def _gobel_block_core(q, b):
+    """Construction exacte : bloc b×b tourné à 45° + 4 escaliers de q rangées.
+
+    Le diamant central a ses côtés sur x+y = q+1 (et symétriques) ; chaque
+    escalier de coin tient dans le triangle x+y <= q.  Il reste donc une
+    marge de 1, et le côté total est S = q + 1 + b/√2."""
+    S = q + 1.0 + b / SQRT2
+    # Bloc b×b de carrés unité, tourné de 45°, centré.
+    loc = np.array([(i + 0.5 - 0.5 * b, j + 0.5 - 0.5 * b)
+                    for i in range(b) for j in range(b)], dtype=float)
+    ca = sa = HALF_SQRT2
+    R = np.array([[ca, -sa], [sa, ca]])
+    c_blk = loc @ R.T + 0.5 * S
+    t_blk = np.full(len(c_blk), math.pi / 4.0)
+    # Escaliers de q(q+1)/2 carrés dans chacun des 4 coins.
+    cs, ts = [], []
+    for sx, sy in ((1.0, 1.0), (-1.0, 1.0), (1.0, -1.0), (-1.0, -1.0)):
+        for r in range(q):
+            for i in range(q - r):
+                x = 0.5 + i if sx > 0 else S - 0.5 - i
+                y = 0.5 + r if sy > 0 else S - 0.5 - r
+                cs.append((x, y))
+                ts.append(0.0)
+    centers = np.vstack([c_blk, np.array(cs, dtype=float)])
+    thetas = np.concatenate([t_blk, np.array(ts, dtype=float)])
+    return centers, thetas, S
+
+
+def gobel_block_config(n, a, rng, rot=True, jitter=0.0):
+    """Amorce exacte de Göbel à bloc tourné (n = 2q²+2q+b²)."""
+    if not rot:
+        return None
+    params = _gobel_block_params(n)
+    if not params:
+        return None
+    q, b = params[0]
+    centers, thetas, S = _gobel_block_core(q, b)
+    if a >= S:
+        centers = centers + 0.5 * (a - S)
+    else:
+        centers = centers * (a / S)
+    if jitter:
+        centers = centers + rng.normal(0.0, jitter, centers.shape)
+        thetas = thetas + rng.normal(0.0, jitter, thetas.shape)
+    return centers, thetas
+
+
+def _l_augment_core(centers, thetas, s):
+    """Ajoute un « L » d'épaisseur 1 autour d'un empilement de côté s.
+
+    n' = n + 2⌊s⌋ + 1, côté s+1.  Construction exacte si la configuration
+    d'origine est valide dans [0,s]²."""
+    fl = int(math.floor(s + 1e-9))
+    S = s + 1.0
+    # L'empilement d'origine occupe [0,s]² ; le « L » occupe la bande
+    # supérieure [0,s+1]×[s,s+1] (fl+1 carrés) et la bande droite
+    # [s,s+1]×[0,s] (fl carrés).  Aucun décalage des centres d'origine.
+    top = [(0.5 + i, s + 0.5) for i in range(fl + 1)]
+    right = [(s + 0.5, 0.5 + j) for j in range(fl)]
+    add = np.array(top + right, dtype=float)
+    cc = np.vstack([centers, add])
+    tt = np.concatenate([thetas, np.zeros(len(add))])
+    return cc, tt, S
+
+
+def _base_exact_configs(max_n=100):
+    """Configurations exactes de base, avant augmentations en « L »."""
+    out = []
+    # Göbel n = k²+1.
+    for k in range(2, int(math.isqrt(max_n - 1)) + 1):
+        n = k * k + 1
+        c, t = _gobel_core(k)
+        out.append((n, c, t, k + HALF_SQRT2, f"gobel_k{k}"))
+    # Trump (n=11) et Bidwell (n=17).
+    if max_n >= 11:
+        c, t = trump_config(11, 3.877083590022814, None, True, 0.0)
+        out.append((11, c, t, 3.877083590022814, "trump"))
+    if max_n >= 17:
+        c, t = bidwell_config(17, 4.675530093604551, None, True, 0.0)
+        out.append((17, c, t, 4.675530093604551, "bidwell"))
+    # Göbel à bloc tourné.
+    for n in range(5, max_n + 1):
+        params = _gobel_block_params(n)
+        if not params:
+            continue
+        q, b = params[0]
+        c, t, S = _gobel_block_core(q, b)
+        out.append((n, c, t, S, f"gobel_bloc_{q}_{b}"))
+    # Variante décentrée de Göbel (n = 2q²+4q+b²+1) : exacte elle aussi.
+    for n in range(5, max_n + 1):
+        pr = _gobel_offcenter_params(n)
+        if pr is None:
+            continue
+        q, b, S = pr
+        c, t, S = _gobel_offcenter_core(q, b)
+        out.append((n, c, t, S, f"gobel_decentre_{q}_{b}"))
+    return out
+
+
+_EXACT_POOL_CACHE = None
+
+
+def _exact_pool(max_n=100, depth=4):
+    """Ferme exacte : bases + augmentations en « L » (jusqu'à `depth`).
+
+    Le cache dépend du mode (`PACK`) : une construction validée en carré/carré
+    n'a aucun sens pour les autres géométries."""
+    global _EXACT_POOL_CACHE
+    if (_EXACT_POOL_CACHE is not None and _EXACT_POOL_CACHE[0] >= max_n
+            and _EXACT_POOL_CACHE[1] >= depth
+            and _EXACT_POOL_CACHE[2] == PACK):
+        return _EXACT_POOL_CACHE[3]
+    entries = list(_base_exact_configs(max_n))
+    frontier = list(entries)
+    seen = set()
+    pool = {}
+    for _ in range(depth):
+        nxt = []
+        for (n, c, t, s, name) in frontier:
+            key = (n, round(s, 9), round(float(c[0, 0]), 9))
+            if key in seen:
+                continue
+            seen.add(key)
+            pool.setdefault(n, []).append((c, t, s, name))
+            fl = int(math.floor(s + 1e-9))
+            n2 = n + 2 * fl + 1
+            if n2 <= max_n:
+                c2, t2, s2 = _l_augment_core(c, t, s)
+                nxt.append((n2, c2, t2, s2, name + "+L"))
+        frontier = nxt
+        if not frontier:
+            break
+    for n, items in pool.items():
+        items.sort(key=lambda z: z[2])
+        del items[8:]
+    _EXACT_POOL_CACHE = (max_n, depth, PACK, pool)
+    return pool
+
+
+def exact_configs(n, rng=None, jitter=0.0, limit=6):
+    """Configurations exactes disponibles pour n (les meilleures d'abord)."""
+    pool = _exact_pool()
+    out = []
+    for (c, t, s, name) in pool.get(int(n), []):
+        if exact_violation(c, t, s) > 10.0 * FEAS_TOL:
+            continue
+        cc, tt = c.copy(), t.copy()
+        if jitter and rng is not None:
+            cc = cc + rng.normal(0.0, jitter, cc.shape)
+            tt = tt + rng.normal(0.0, jitter, tt.shape)
+        out.append((name, cc, tt, float(s)))
+        if len(out) >= limit:
+            break
+    return out
+
+
+def best_exact_side(n):
+    """Meilleur majorant exact connu pour n (ou None)."""
+    items = exact_configs(n, limit=1)
+    return items[0][3] if items else None
+
+
+# --- Amorces ciblées pour les records de DS7 (non certifiées a priori) ----
+
+def _gobel_strip_params(n):
+    """n = q²+q+3+⌊(q-1)√2⌋, côté q+1+1/√2."""
+    for q in range(1, int(math.isqrt(n)) + 2):
+        if q * q + q + 3 + int(math.floor((q - 1) * SQRT2)) == n:
+            return q
+    return None
+
+
+def gobel_strip_config(n, a, rng, rot=True, jitter=0.0):
+    """Amorce « bande diagonale » de Göbel : grille (q+1)² + m carrés à 45°."""
+    if not rot:
+        return None
+    q = _gobel_strip_params(n)
+    if q is None:
+        return None
+    S = q + 1.0 + 1.0 / SQRT2
+    side = q + 1
+    c, t = grid_config(n, S, rng, jitter=0.0)
+    # On remplace les m dernières cases (coin haut-droit) par des carrés à 45°.
+    m = n - side * side
+    if 0 < m <= n:
+        idx = np.arange(n - m, n)
+        for j, i in enumerate(idx):
+            ix, iy = divmod(int(i), side)
+            # centre du carré tourné, décalé vers le coin haut-droit
+            c[i] = (min(S - HALF_SQRT2, ix + 0.5 + 0.35 * (j % 2)),
+                    min(S - HALF_SQRT2, iy + 0.5 + 0.35 * (j // 2)))
+            t[i] = math.pi / 4.0
+    if a >= S:
+        c = c + 0.5 * (a - S)
+    else:
+        c = c * (a / S)
+    if jitter:
+        c = c + rng.normal(0.0, jitter, c.shape)
+        t = t + rng.normal(0.0, jitter, t.shape)
+    return c, t
+
+
+def _gobel_offcenter_params(n):
+    """Paramètres (q, b, S) de la variante décentrée de Göbel.
+
+    n = 2q² + 4q + b² + 1, côté S = q + 3/2 + b/√2.  La construction n'est
+    retenue que si le bloc décalé est réellement sans chevauchement (ce qui
+    restreint (q, b))."""
+    out = []
+    for q in range(1, int(math.isqrt(n)) + 1):
+        for b in range(1, int(math.isqrt(n)) + 1):
+            if 2 * q * q + 4 * q + b * b + 1 != n:
+                continue
+            if b / SQRT2 >= q + 0.5:      # marge insuffisante pour le décalage
+                continue
+            c, t, S2 = _gobel_offcenter_core(q, b)
+            if 2 * q + 1 > S2:            # la colonne doit tenir en hauteur
+                continue
+            if exact_violation(c, t, S2) > 10.0 * FEAS_TOL:
+                continue
+            out.append((S2, q, b))
+    if not out:
+        return None
+    out.sort()
+    return out[0][1], out[0][2], out[0][0]
+
+
+def _gobel_offcenter_core(q, b):
+    """Bloc de Göbel décalé en diagonale, puis colonne de 2q+1 carrés.
+
+    Le bloc d'origine (côté S0 = q+1+b/√2) est réorganisé pour tenir dans le
+    rectangle (S0-1/2) × (S0+1/2) : le losange central glisse de (-1/4,+1/4)
+    et les escaliers de coins se décalent de 0, (-1/2,0), (0,+1/2) et
+    (-1/2,+1/2).  La colonne ajoutée à droite complète le carré de côté
+    S = S0+1/2 = q+3/2+b/√2 (figure 9 de DS7)."""
+    S0 = q + 1.0 + b / SQRT2
+    W = S0 - 0.5
+    S = S0 + 0.5
+    loc = np.array([(i + 0.5 - 0.5 * b, j + 0.5 - 0.5 * b)
+                    for i in range(b) for j in range(b)], dtype=float)
+    ca = sa = HALF_SQRT2
+    R = np.array([[ca, -sa], [sa, ca]])
+    c_blk = loc @ R.T + np.array([0.5 * S0 - 0.25, 0.5 * S0 + 0.25])
+    t_blk = np.full(len(c_blk), math.pi / 4.0)
+    shifts = {(1.0, 1.0): (0.0, 0.0), (-1.0, 1.0): (-0.5, 0.0),
+              (1.0, -1.0): (0.0, 0.5), (-1.0, -1.0): (-0.5, 0.5)}
+    cs, ts = [], []
+    for (sx, sy), (dx, dy) in shifts.items():
+        for r in range(q):
+            for i in range(q - r):
+                x = 0.5 + i if sx > 0 else S0 - 0.5 - i
+                y = 0.5 + r if sy > 0 else S0 - 0.5 - r
+                cs.append((x + dx, y + dy))
+                ts.append(0.0)
+    centers = np.vstack([c_blk, np.array(cs, dtype=float)])
+    thetas = np.concatenate([t_blk, np.array(ts, dtype=float)])
+    col = np.array([(W + 0.5, 0.5 + j) for j in range(2 * q + 1)],
+                   dtype=float)
+    centers = np.vstack([centers, col])
+    thetas = np.concatenate([thetas, np.zeros(len(col))])
+    return centers, thetas, S
+
+
+def gobel_offcenter_config(n, a, rng, rot=True, jitter=0.0):
+    """Amorce EXACTE de la variante décentrée de Göbel (n = 2q²+4q+b²+1)."""
+    if not rot:
+        return None
+    pr = _gobel_offcenter_params(n)
+    if pr is None:
+        return None
+    q, b, S = pr
+    c, t, S = _gobel_offcenter_core(q, b)
+    g = place_exact(c, t, S, a, rng, jitter, rot)
+    return g
+
+
+def hamalainen_config(n, a, rng, rot=True, jitter=0.0):
+    """Amorce inspirée de Hämäläinen (n=18 et 86), angle ≈24.295°."""
+    if not rot or n not in (18, 86):
+        return None
+    S = (7.0 + math.sqrt(7.0)) / 2.0 if n == 18 else \
+        (17.0 + math.sqrt(7.0)) / 2.0
+    al = math.asin((math.sqrt(7.0) - 1.0) / 4.0)
+    base = int(math.floor(S))
+    c, t = grid_config(n, S, rng, jitter=0.0)
+    # Les cases du coin haut-droit sont remplacées par des carrés tiltés.
+    m = n - base * base
+    if m > 0:
+        for j in range(min(m, n)):
+            i = n - 1 - j
+            ix, iy = divmod(int(i), base)
+            c[i] = (min(S - 0.5, ix + 0.5 + 0.2 * j),
+                    min(S - 0.5, iy + 0.5 + 0.2 * j))
+            t[i] = al
+    if a >= S:
+        c = c + 0.5 * (a - S)
+    else:
+        c = c * (a / S)
+    if jitter:
+        c = c + rng.normal(0.0, jitter, c.shape)
+        t = t + rng.normal(0.0, jitter, t.shape)
+    return c, t
+
+
+def wide_strip_config(n, a, rng, rot=True, jitter=0.0):
+    """Amorces de bandes diagonales larges (n=19, 66, 87)."""
+    if not rot or n not in (19, 66, 87):
+        return None
+    m = {19: 2, 66: 3, 87: 4}[n]
+    return diagonal_band_config(n, a, rng, True, m, jitter)
+
+
+def target_configs(n, rng=None, jitter=0.0):
+    """Amorces ciblées DS7 : (nom, centres, angles, côté cible).
+
+    Ces configurations sont heuristiques : elles ne sont jamais utilisées
+    comme majorant avant certification (elles servent d'amorces au
+    polissage et leurs sondes sont certifiées).
+    """
+    if rng is None:
+        rng = np.random.default_rng(12345)
+    out = []
+    specs = []
+
+    q = _gobel_strip_params(n)
+    if q is not None:
+        specs.append(("gobel_bande", gobel_strip_config,
+                      q + 1.0 + 1.0 / SQRT2))
+    pr = _gobel_offcenter_params(n)
+    if pr is not None:
+        specs.append(("gobel_decentre", gobel_offcenter_config, pr[2]))
+    if n == 18:
+        specs.append(("hamalainen", hamalainen_config,
+                      (7.0 + math.sqrt(7.0)) / 2.0))
+    elif n == 86:
+        specs.append(("hamalainen", hamalainen_config,
+                      (17.0 + math.sqrt(7.0)) / 2.0))
+    if n in (19, 66, 87):
+        _s = {19: 3.0 + 4.0 * SQRT2 / 3.0, 66: 3.0 + 4.0 * SQRT2,
+              87: 9.8520}[n]
+        specs.append(("bande_large", wide_strip_config, _s))
+
+    for name, fn, S in specs:
+        g = fn(n, S, rng, True, 0.0)
+        if g is None:
+            continue
+        c, t = g
+        out.append((name, c, t, float(S)))
+        if jitter:
+            out.append((name + "_bruit", c + rng.normal(0.0, jitter, c.shape),
+                        t + rng.normal(0.0, jitter, t.shape), float(S)))
+    return out
+
+
+def place_exact(centers, thetas, s, a, rng=None, jitter=0.0,
+                rot=True):
+    """Place une construction exacte de côté `s` dans un conteneur `a`.
+
+    Si `a >= s`, la configuration est simplement recentrée (elle reste
+    exactement valide). Sinon elle est comprimée homothétiquement pour servir
+    de topologie de départ au polissage."""
+    if s <= 0:
+        return None
+    c = np.array(centers, dtype=float, copy=True)
+    t = np.array(thetas, dtype=float, copy=True)
+    if a >= s:
+        c = c + 0.5 * (a - s)
+    else:
+        c = c * (a / s)
+    if jitter and rng is not None:
+        c = c + rng.normal(0.0, jitter, c.shape)
+        if rot:
+            t = t + rng.normal(0.0, jitter, t.shape)
+    return c, t
 
 
 def corners_config(n, a, rng, rot=True):
@@ -2510,6 +2974,8 @@ def peel_refine(centers, thetas, a, rng, rot=True, rounds=4,
     très peu coûteux comparé à un essai complet.
     """
     best_a, bc, bt = certify(centers, thetas, a, rot)
+    best_a, bc, bt = orientation_refine(bc, bt, best_a, rng, rot,
+                                        angles=16, deadline=deadline)
     n = bc.shape[0]
     for _ in range(rounds):
         if deadline is not None and time.time() >= deadline:
@@ -2520,7 +2986,7 @@ def peel_refine(centers, thetas, a, rng, rot=True, rounds=4,
             if deadline is not None and time.time() >= deadline:
                 break
             a_try = best_a * (1.0 - frac)
-            if a_try <= area_lower_bound(n) + 1e-9:   # borne d'aire : inutile
+            if a_try <= lower_bound(n) + 1e-9:   # borne basse : inutile
                 continue
             _v, c2, t2 = polish((bc, bt), a_try, iters, rng, rot,
                                 hard_iters=hard_iters)
@@ -2540,6 +3006,9 @@ def peel_refine(centers, thetas, a, rng, rot=True, rounds=4,
                     break
         if not progressed:
             break
+    best_a, bc, bt = orientation_refine(bc, bt, best_a, rng, rot,
+                                        angles=16, polish_iters=60,
+                                        deadline=deadline)
     return best_a, bc, bt
 
 
@@ -2801,6 +3270,42 @@ def diverse_top(scored, a, k, thresh=0.12):
     return [scored[i] for i in sorted(chosen)]
 
 
+def orientation_refine(centers, thetas, a, rng, rot=True, angles=16,
+                       polish_iters=0, deadline=None):
+    """Balayage d'orientations globales autour du certificat courant.
+
+    Une rotation rigide de tout l'empilement change les directions de contact :
+    le sertissage qui suit peut alors révéler un conteneur plus petit, même
+    quand la configuration de départ est déjà certifiée.  Chaque essai reste
+    un certificat exact (rotation -> dilation -> sertissage), donc aucun
+    candidat non valide ne peut être renvoyé.
+    """
+    best_a, bc, bt = certify(centers, thetas, a, rot)
+    if not rot or _CIRC_SHAPE or angles <= 1:
+        return best_a, bc, bt
+    c = _ctx()
+    for delta in np.linspace(0.0, math.pi / 2.0, int(angles) + 1)[1:]:
+        if deadline is not None and time.time() >= deadline:
+            break
+        ctr = (np.array([0.5 * best_a, 0.5 * best_a]) if c['sqc']
+               else np.zeros(2))
+        ca, sa = math.cos(delta), math.sin(delta)
+        R = np.array([[ca, -sa], [sa, ca]])
+        c2 = (bc - ctr) @ R.T + ctr
+        t2 = bt + delta
+        a2, c3, t3 = certify(c2, t2, best_a, rot)
+        if a2 < best_a - 1e-12:
+            best_a, bc, bt = a2, c3, t3
+            if polish_iters > 0:
+                a_try = best_a * (1.0 - 1e-5)
+                v, c4, t4 = polish((bc, bt), a_try, int(polish_iters), rng,
+                                   rot)
+                a4, c5, t5 = certify(c4, t4, a_try, rot)
+                if a4 < best_a - 1e-12:
+                    best_a, bc, bt = a4, c5, t5
+    return best_a, bc, bt
+
+
 def attempt(n, a, rng, agents=6, iters=250, polish_iters=300,
             champions=(), rot=True, opt="adam", max_slots=64, de=16, H=64,
             quiet=True, anneal_iters=1500, kicks=3, arch="set", deadline=None):
@@ -2853,6 +3358,21 @@ def attempt(n, a, rng, agents=6, iters=250, polish_iters=300,
         gfam = gobel_family(n, a, rng, rot)
         tfam = trump_family(n, a, rng, rot)
         bfam = bidwell_family(n, a, rng, rot)
+        # Constructions exactes DS7 disponibles pour ce n (Göbel à bloc
+        # tourné, Trump, Bidwell, augmentations en « L ») : elles sont
+        # certifiées gratuites et servent d'amorces ET de champions.
+        efam = []
+        for _nm, cc, tt, ss in exact_configs(n, rng, limit=6):
+            g = place_exact(cc, tt, ss, a, rng, 0.0, rot)
+            if g is not None:
+                efam.append(g)
+        # Amorces ciblées des records DS7 (heuristiques : elles seront
+        # certifiées/probées avant tout usage comme majorant).
+        xfam = []
+        for _nm, cc, tt, ss in target_configs(n, rng):
+            g = place_exact(cc, tt, ss, a, rng, 0.0, rot)
+            if g is not None:
+                xfam.append(g)
         if gfam:
             inits.insert(0, lambda nn, aa, rr, r: gobel_config(
                 nn, aa, rr, r, jitter=0.0))
@@ -2862,9 +3382,17 @@ def attempt(n, a, rng, agents=6, iters=250, polish_iters=300,
         if bfam:
             inits.insert(0, lambda nn, aa, rr, r: bidwell_config(
                 nn, aa, rr, r, jitter=0.0))
+        if efam:
+            inits.insert(0, lambda nn, aa, rr, r, _g=efam[0]:
+                         (_g[0].copy(), _g[1].copy()))
+        if xfam:
+            inits.insert(0, lambda nn, aa, rr, r, _g=xfam[0]:
+                         (_g[0].copy(), _g[1].copy()))
         candidates.extend(gfam)
         candidates.extend(tfam)
         candidates.extend(bfam)
+        candidates.extend(efam)
+        candidates.extend(xfam)
     elif c['cic']:
         inits = [
             lambda nn, aa, rr, r: grid_config(nn, aa, rr, jitter=0.02),
@@ -2900,7 +3428,16 @@ def attempt(n, a, rng, agents=6, iters=250, polish_iters=300,
             fam = sweep_families(n, a, rng, rot)
         else:
             fam = generic_families(n, a, rng, rot)
-        fam.sort(key=lambda z: exact_violation(z[0], z[1], a))
+        def _fam_key(z):
+            v = exact_violation(z[0], z[1], a)
+            if v <= FEAS_TOL:
+                try:
+                    return (0.0, tighten_a(z[0], z[1], a)[0])
+                except Exception:
+                    return (0.0, a)
+            return (1.0, v)
+
+        fam.sort(key=_fam_key)
         ftop = fam[:4]
         fpol = _pmap(_polish_worker,
                      [(c, th, a, next_seed(), polish_iters, rot)
@@ -2999,7 +3536,7 @@ def estimate_C(n, rng, tol=2e-3, agents=6, iters=250, polish_iters=300,
                rot=True, opt="adam", max_slots=64, quiet=False,
                anneal_iters=1500, kicks=3, arch="set", spec=1,
                time_budget=0.0, bar_position=None, bar_leave=True,
-               bar_desc=None):
+               bar_desc=None, extra_champs=()):
     """Estime C(n) par curricula (descente de a) + bissection, avec CERTIF.
 
     À chaque essai on ne se fie pas seulement à la violation résiduelle de
@@ -3053,6 +3590,36 @@ def estimate_C(n, rng, tol=2e-3, agents=6, iters=250, polish_iters=300,
             bar.write(" ".join(str(v) for v in x))
 
     log(f"  a départ (grille, faisable) : a = {a_hi:.6f}")
+
+    # --- constructions exactes DS7 : certification DIRECTE (aucun essai)
+    #     Elles fournissent un majorant certifié et un point de départ plus
+    #     serré que la grille. Les amorces ciblées DS7 sont aussi certifiées :
+    #     une dilation donne toujours un certificat valide.
+    lb = lower_bound(n)
+    if not _CIRC_SHAPE and not _CIRC_CONT:
+        for _nm, _c0, _t0, _s0 in exact_configs(n, limit=8):
+            _ac, _cc, _tt = certify(_c0, _t0, _s0, rot)
+            if _ac < best_a - 1e-12:
+                best_a, best_cfg = _ac, (_cc, _tt)
+            if _ac < a_hi - 1e-12:
+                a_hi = _ac
+            champs.append((_cc, _tt, _ac))
+        for _nm, _c0, _t0, _s0 in target_configs(n):
+            _ac, _cc, _tt = certify(_c0, _t0, _s0, rot)
+            if _ac < best_a - 1e-12:
+                best_a, best_cfg = _ac, (_cc, _tt)
+            if _ac < a_hi - 1e-12:
+                a_hi = _ac
+            champs.append((_cc, _tt, _ac))
+        for (_c0, _t0, _s0) in extra_champs:
+            _ac, _cc, _tt = certify(_c0, _t0, _s0, rot)
+            if _ac < best_a - 1e-12:
+                best_a, best_cfg = _ac, (_cc, _tt)
+            if _ac < a_hi - 1e-12:
+                a_hi = _ac
+            champs.append((_cc, _tt, _ac))
+        log(f"  constructions exactes/DS7 : {len(champs) - 1} amorce(s), "
+            f"meilleur certifié a = {best_a:.6f}  (minorant {lb:.6f})")
 
     def attempt_kw(light=False, deep=False):
         """Mot-clés d'attempt ; `light` = sonde spéculative (B3) : moins
@@ -3149,6 +3716,28 @@ def estimate_C(n, rng, tol=2e-3, agents=6, iters=250, polish_iters=300,
         durees.append(time.time() - t1)
         return out
 
+    # --- sondes des records DS7 (amorces ciblées) : elles ne sont pas des
+    #     certificats a priori ; un essai complet décide, et seul un succès
+    #     (certifié) abaisse le majorant.
+    if not _CIRC_SHAPE and not _CIRC_CONT:
+        _seen_s = set()
+        for _nm, _c0, _t0, _s0 in target_configs(n):
+            _key_s = round(float(_s0), 9)
+            if (_s0 >= a_hi - 1e-12 or _key_s in _seen_s
+                    or hors_delai() or not assez_de_temps(0.5)):
+                continue
+            # Une amorce trop éloignée de la faisabilité coûte un essai
+            # complet pour rien : elle reste disponible comme topologie,
+            # mais on ne la sonde pas explicitement.
+            if exact_violation(_c0, _t0, _s0) > 0.05 * _s0:
+                continue
+            _seen_s.add(_key_s)
+            _v, _a = essai(_s0)
+            log(f"  sonde DS7 {_nm} : a = {_s0:.6f}  viol = {_v:.3e}  "
+                f"certifié a' = {_a:.6f}  {'OK' if _v <= FEAS_TOL else 'non'}")
+            if _v <= FEAS_TOL and _s0 < a_hi - 1e-12:
+                a_hi = _s0
+
     # --- sonde ciblée n = k²+1 : la borne d'acceptation k + √2/2 est un
     #     objectif naturel. Pour n = 5 et 10, l'amorce EXACTE de Göbel y est
     #     faisable sans aucun polissage ; pour les autres k elle sert de
@@ -3175,7 +3764,7 @@ def estimate_C(n, rng, tol=2e-3, agents=6, iters=250, polish_iters=300,
             break
         rungs = [a - (k + 1) * step for k in range(max(1, spec))]
         rungs = [r for r in rungs
-                 if r > area_lower_bound(n) - 1e-9]   # borne d'aire
+                 if r > lb - 1e-9]   # borne basse certifiée
         if not rungs:
             break
         results = essai_batch(rungs, light=(len(rungs) > 1))
@@ -3211,7 +3800,7 @@ def estimate_C(n, rng, tol=2e-3, agents=6, iters=250, polish_iters=300,
                 if hors_delai():
                     break
                 ap = rungs[0] * (1.0 - frac)
-                if ap <= area_lower_bound(n) + 1e-9:
+                if ap <= lb + 1e-9:
                     break
                 dp = essai_deep(ap)
                 if dp is None:
@@ -3236,7 +3825,7 @@ def estimate_C(n, rng, tol=2e-3, agents=6, iters=250, polish_iters=300,
 
     # --- bissection sur la faisabilité (a -> l'optimiseur y arrive-t-il ?)
     if a_lo is None:
-        a_lo = area_lower_bound(n)      # borne d'aire : strictement en dessous,
+        a_lo = lb      # borne basse certifiée : en dessous,
                                         # l'empilement est impossible (non testé)
     while a_hi - a_lo > tol and not hors_delai() and assez_de_temps(0.5):
         am = 0.5 * (a_hi + a_lo)
@@ -3259,6 +3848,9 @@ def estimate_C(n, rng, tol=2e-3, agents=6, iters=250, polish_iters=300,
     if deadline is not None and time.time() >= deadline:
         log("  budget de temps écoulé : meilleur certificat conservé")
     log(f"  -> C({n}) <= {best_a:.6f}   (certifié, {dt:.1f} s)")
+    if lb > 0:
+        log(f"  encadrement : {lb:.6f} <= C({n}) <= {best_a:.6f}   "
+            f"(écart {100.0 * (best_a / lb - 1.0):.3f} %)")
     if bar is not None:
         # La recherche est finie : on cale la borne sur le nombre réel
         # d'essais pour que la barre affiche bien 100 %.
@@ -3413,6 +4005,10 @@ def bench(nmin=1, nmax=10, seed=0, agents=6, iters=250, polish_iters=300,
     print("=" * 78)
     print(f"{'n':>3} {'a trouvé':>12} {'densité':>9} {'temps':>8}  état")
     n_ok = 0
+    # Cache inter-n : une augmentation en « L » certifiée pour n fournit une
+    # amorce exacte pour n' = n + 2⌊a(n)⌋ + 1, rencontré plus loin dans le
+    # balayage croissant.
+    aug_cache = {}
     it = tqdm(range(nmin, nmax + 1), desc=f"bench {nmin}→{nmax}",
               unit="n", dynamic_ncols=True, leave=True, file=sys.stdout)
     for n in it:
@@ -3421,7 +4017,8 @@ def bench(nmin=1, nmax=10, seed=0, agents=6, iters=250, polish_iters=300,
             n, rng, tol=tol, agents=agents, iters=iters,
             polish_iters=polish_iters, rot=rot, opt=opt, quiet=True,
             anneal_iters=anneal_iters, kicks=kicks,
-            arch=arch, spec=spec, time_budget=time_budget)
+            arch=arch, spec=spec, time_budget=time_budget,
+            extra_champs=tuple(aug_cache.get(n, ())))
         # --- règles : solution sur grille OU n = k²+1 au-dessus de la borne
         #     k + √2/2 -> RIEN enregistré, RIEN généré
         ok_sol, raison_sol = solution_acceptable(n, a_hat)
@@ -3435,6 +4032,15 @@ def bench(nmin=1, nmax=10, seed=0, agents=6, iters=250, polish_iters=300,
         if figs:
             os.makedirs(dir_figures(outdir), exist_ok=True)
             plot_packing(c, th, a_hat, figure_path(n, outdir), n)
+        # amorce « L » pour le descendant de n, si l'on reste dans le range
+        child = n + 2 * int(math.floor(a_hat + 1e-9)) + 1
+        if child <= nmax:
+            try:
+                cc, tt, s2 = _l_augment_core(c, th, a_hat)
+                a2, cc, tt = certify(cc, tt, s2, rot)
+                aug_cache.setdefault(child, []).append((cc, tt, a2))
+            except Exception:
+                pass
     it.close()
     print("=" * 78)
     if n_ok:

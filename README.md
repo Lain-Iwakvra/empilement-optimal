@@ -50,6 +50,33 @@ Les solutions refusées ne produisent aucun fichier :
 - côté entier en mode carré dans carré ;
 - cas `n = k² + 1` au-dessus de la borne `k + √2/2`.
 
+## Constructions et bornes (DS7)
+
+En mode `sq_in_sq`, le programme exploite les constructions exactes du
+recensement DS7 d'Erich Friedman :
+
+- Göbel généralisé pour `n = k²+1` (côté `k + √2/2`) ;
+- Göbel à bloc `b×b` tourné pour `n = 2q²+2q+b²` (côté `q+1+b/√2`) ;
+- variante décentrée pour `n = 2q²+4q+b²+1` (côté `q+3/2+b/√2`) ;
+- Trump (`n=11`) et Bidwell (`n=17`) ;
+- augmentation en « L » : `n' = n + 2⌊s⌋ + 1` pour un côté `s+1`.
+
+Ces configurations sont des **certificats directs** : elles sont vérifiées
+géométriquement puis utilisées comme majorants. Les amorces ciblées des
+records (bandes diagonales, Hämäläinen, bandes larges) restent heuristiques :
+elles ne sont retenues qu'après certification.
+
+La borne basse de la bissection utilise les minorants publiés de DS7 (et non
+plus la seule borne d'aire). La console affiche donc un encadrement :
+
+```text
+encadrement : 5.391800 <= C(26) <= 5.621375   (écart 4.258 %)
+```
+
+Un balayage d'orientations globales affine le certificat final, et le mode
+`--range` réutilise les augmentations en « L » d'un `n` déjà résolu pour
+amorcer les `n` suivants.
+
 ## Certification
 
 Chaque résultat renvoyé est un majorant certifié de la taille optimale :
