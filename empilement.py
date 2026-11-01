@@ -41,10 +41,19 @@ Méthode
    - Göbel à bloc b×b tourné pour n = 2q²+2q+b² (côté q+1+b/√2) ;
    - variante décentrée pour n = 2q²+4q+b²+1 (côté q+3/2+b/√2) ;
    - Trump (n=11), Bidwell (n=17), Hämäläinen (n=18),
-     Wainwright (n=19), Stenlund (n=66), famille √7 (n=86) ;
+     Wainwright (n=19), Stenlund (n=66) ;
+   - famille √7 généralisée : côté (m−1/2)+√7/2, angle atan((4−√7)/3) ;
+     les escaliers sont fixes et la bande inclinée est placée par contacts
+     exacts (balayage de phases au pas de 1/64). Enregistre m=6 → n=39,
+     m=8 → n=68, m=9 → n=86 ;
+   - record n=37 de Cantrell : petite table de coordonnées certifiée
+     (angles ≈42.086° et 45°), faute de formule close publiée ; côté du
+     certificat 6.598648, et n=50 par augmentation en « L » ;
    - augmentation en « L » : n' = n + 2⌊s⌋ + 1 pour un côté s+1.
    Ces constructions sont certifiées directement, sans essai. Seules les
-   amorces des records purement numériques restent heuristiques.
+   amorces des records purement numériques restent heuristiques. Le repli
+   DS7 empêche une recherche de dépasser la meilleure construction exacte
+   certifiée : elle est alors enregistrée à la place, avec son nom.
 5. Recherche de C(n) : descente géométrique de `a` suivie d'une bissection.
    La borne basse utilise les minorants publiés de DS7 (et non plus la seule
    aire), ce qui permet d'afficher un encadrement [minorant, majorant].
@@ -62,7 +71,8 @@ processus (--workers). --spec K lance K essais spéculatifs pendant la
 descente ; --runs K lance K runs multi-graines successifs et retient le meilleur.
 
 RÈGLES D'ENREGISTREMENT (solution_acceptable) — une solution refusée n'est
-NI enregistrée NI générée :
+NI enregistrée NI générée (un avertissement signale une éventuelle figure
+homonyme laissée par un run précédent) :
   1. solution SUR GRILLE : côté `a` entier (n = k², k²-1, ...) -> rien ;
   2. repli DS7 : si n a un record primitif (Table 1) ET qu'une construction
      exacte certifiée existe pour ce n, une solution de côté supérieur est
@@ -70,6 +80,8 @@ NI enregistrée NI générée :
      donc elle est enregistrée ; refus seulement si la construction n'est
      pas certifiable. Une borne publiée purement numérique n'est jamais
      utilisée comme contrainte sans construction certifiée.
+     Avec --no-rotate, les constructions inclinées sont refusées : les
+     optima carré-dans-carré sans rotation sont des côtés entiers.
 
 Sortie
 ------
@@ -85,7 +97,13 @@ Usage
     python3 empilement.py -n 17 --runs 4           # 4 runs multi-graines
     python3 empilement.py -n 26 --time-budget 20   # 20 s pour ce n
     python3 empilement.py --range '10;50'          # n = 10 à 50
+    python3 empilement.py --range 10-50            # séparateurs ; : , .. -
     python3 empilement.py --gradcheck
+
+Options numériques validées avant calcul : --runs >= 1, --tol > 0,
+--iters >= 1, --agents >= 1, --polish >= 1, --anneal-iters >= 0,
+--kicks >= 0, --workers >= 1, --max-slots >= 1, --time-budget >= 0.
+--out crée son dossier parent s'il manque.
 """
 
 import argparse
@@ -263,16 +281,42 @@ def max_bound_config(n, rot=True):
     if it is None:
         return None
     b = float(it[3])
+    if b < lower_bound(n) - 1e-9:
+        return None
     try:
         _name, c0, t0, s0 = it
         if s0 > b + 1e-9:
             return None
         a, c, t = certify(c0, t0, b, rot)
-    except Exception:
+    except (ValueError, RuntimeError, FloatingPointError,
+            np.linalg.LinAlgError):
         return None
     if a > b + 1e-9 or exact_violation(c, t, a) > FEAS_TOL:
         return None
     return a, c, t
+
+
+def ds7_fallback(n, a_hat, rot=True):
+    """Repli DS7 commun à `bench` et `main`.
+
+    Renvoie (a, centres, angles, a_trouvé, nom, message) si la recherche a
+    dépassé la meilleure construction exacte certifiée, sinon None.  Le
+    message est prêt à afficher ; le nom permet de l'ajouter au titre PNG.
+    """
+    b_max = ds7_certified_side(n)
+    if b_max is None or a_hat <= b_max + 1e-9:
+        return None
+    it = ds7_certified_config(n)
+    repli = max_bound_config(n, rot)
+    if it is None or repli is None:
+        return None
+    a, c, t = repli
+    rec = ds7_best(n)
+    diag = f" (record DS7 {rec:.6f})" if rec is not None else ""
+    msg = (f"repli sur la meilleure construction exacte certifiée "
+           f"{b_max:.6f}{diag} : a trouvé {a_hat:.6f} > {b_max:.6f} — "
+           f"construction « {it[0]} » enregistrée à a = {a:.6f}")
+    return a, c, t, a_hat, it[0], msg
 
 
 PACK = "sq_in_sq"
@@ -1731,6 +1775,63 @@ def _stenlund66_core():
     return np.array(cs, dtype=float), np.array(ts, dtype=float), s
 
 
+# --- Record 37 (Cantrell) : bande diagonale modifiée ----------------------
+# Petite table assumée : aucune formule close publiée pour ce record.  La
+# configuration a été reconstruite depuis la figure DS7, affinée puis
+# certifiée ; elle ne remplace jamais la valeur publiée sans certificat.
+_CANTRELL37 = (
+    (0.5000015257518187, 6.09292249452331, -1.4424052405956887e-06),
+    (1.5000042070680628, 6.098647513534863, -7.268263500027438e-07),
+    (4.098638567851169, 6.098645630491518, 5.536220315901754e-07),
+    (5.098642000723736, 6.098645372605159, 1.9797447919215276e-06),
+    (6.098646300658924, 6.098647160142444, 2.1162080778903763e-07),
+    (2.867030833896271, 5.882442611435186, 0.8487390155308583),
+    (3.5125000972278673, 5.0027060464462165, 0.8362475137451144),
+    (2.2168538847279, 5.0927661775239, 0.8362385001334993),
+    (0.505414575545555, 5.087138737510422, -0.005159663216684138),
+    (5.0193690112060265, 5.083334145321018, -0.01187393554960165),
+    (6.035836069217668, 5.09864230838853, 3.504594125345819e-06),
+    (1.4998529803960066, 4.383881008142506, 0.8350765571689093),
+    (2.8259889698153575, 4.27525117715504, 0.8362412354042583),
+    (4.157252577860922, 4.184702948616765, 0.7744233248404718),
+    (6.098645792093021, 4.098636251081629, -1.0179118465333853e-06),
+    (2.120669157695827, 3.5647863757100167, 0.8362420132630982),
+    (4.9798180084749895, 3.5378241689825356, 0.7345783117119217),
+    (3.4358796142885883, 3.4373041363752757, 0.7885827404498681),
+    (0.5367336741021433, 3.5764703020996222, 0.013643690075833218),
+    (4.27522026656095, 2.8260111246489745, 0.7345773833586897),
+    (5.863539027606368, 2.862693602696397, 0.7475208757195525),
+    (2.7209906155027768, 2.713191254606885, 0.7832642813290888),
+    (0.5000022274532175, 2.5478170743428916, -1.894149222582604e-06),
+    (1.50000527456484, 2.500023589410544, -2.003495843650295e-06),
+    (5.0899365501552385, 2.2141285982295216, 0.7351285908438573),
+    (3.571812195707911, 2.1128826595293266, 0.7345769579373705),
+    (4.369497780268727, 1.482055813428721, 0.7358756556344879),
+    (0.5000006922857866, 1.5319402064002485, 1.3845725315158996e-06),
+    (1.5000036612754934, 1.5000201386563685, -1.314367688659758e-06),
+    (2.5000062125582563, 1.5000053485114444, 1.8312675446858576e-06),
+    (6.098642175959381, 1.5000062631820081, -9.061846651547619e-07),
+    (0.5039733088077222, 0.5020106916405491, -0.004026511491104283),
+    (1.5609532458221107, 0.5000015560957571, -1.197897264529661e-06),
+    (2.567025574191848, 0.5000012381757781, -3.7479224872396926e-07),
+    (3.5870975163805605, 0.5500819897513567, 0.029884095881089607),
+    (5.089089006899786, 0.5045860385625422, 0.005313656385967223),
+    (6.095294491322612, 0.5000009288709781, 1.8577436817707157e-06),
+)
+
+
+def _cantrell37_core():
+    """Record n=37 (Cantrell) : côté 6.598647876947906, 37 carrés certifiés.
+
+    Bande de 15 carrés inclinés (42.086°/45°) et 22 carrés alignés.  Le côté
+    est celui du certificat obtenu, légèrement au-dessus de la valeur publiée
+    (6.5986196) : on n'impose jamais une borne non certifiée.  L'augmentation
+    en « L » en déduit n=50 (côté 7.598648).
+    """
+    arr = np.array(_CANTRELL37, dtype=float)
+    return arr[:, :2].copy(), arr[:, 2].copy(), 6.598647876947906
+
+
 def _sqrt7_rects(m):
     """Escaliers alignés de la famille √7 et deux cellules de coin.
 
@@ -1803,14 +1904,17 @@ def _frame_first_u(v0, rects, s, angle, umin=-math.inf):
     return u if math.isfinite(u) else None
 
 
-def _sqrt7_86_core():
-    """Famille √7, m=9 (n=86) : côté 17/2+√7/2, angle atan((4−√7)/3).
+def _sqrt7_core(m):
+    """Famille √7 : côté (m−1/2)+√7/2, angle atan((4−√7)/3).
 
-    65 carrés alignés (deux escaliers et deux cellules de coin) et une bande
-    de 21 carrés inclinés répartis en 11 couloirs. Les positions de la bande
-    sont résolues exactement par contacts (pas de table de coordonnées).
+    Les escaliers alignés sont fixes ; la bande diagonale est placée par
+    contacts exacts.  On balaie les phases de la bande (pas de 1/64) et on
+    garde celle qui maximise le nombre de carrés inclinés.  Aucune table de
+    coordonnées : seules les formules et le solveur de contacts interviennent.
+
+    Capacités obtenues : m=6 → n=39, m=8 → n=68, m=9 → n=86 (m=4 donne 17,
+    m=5 donne 27 mais reste moins bon que la bande de Göbel, m=7 donne 52).
     """
-    m = 9
     s, rects = _sqrt7_rects(m)
     al = math.atan((4.0 - _SQRT7) / 3.0)
     d = np.array([-math.sin(al), math.cos(al)])
@@ -1821,20 +1925,26 @@ def _sqrt7_86_core():
             for j in range(int(round(ry1 - ry0))):
                 cs.append((rx0 + i + 0.5, ry0 + j + 0.5))
                 ts.append(0.0)
-    phase = 21.0 / 64.0
     kmax = int(math.ceil(s * (abs(e[0]) + abs(e[1])))) + 2
-    for k in range(-1, kmax):
-        v0 = phase + k
-        u0 = _frame_first_u(v0, rects, s, al)
-        if u0 is None:
-            continue
-        u1 = _frame_first_u(v0, rects, s, al, umin=u0 + 1.0)
-        for u in (u0, u1):
-            if u is None:
+    best_band = []
+    for ip in range(64):
+        phase = ip / 64.0
+        band = []
+        for k in range(-1, kmax):
+            v0 = phase + k
+            u0 = _frame_first_u(v0, rects, s, al)
+            if u0 is None:
                 continue
-            c = (u + 0.5) * d + (v0 + 0.5) * e
-            cs.append((float(c[0]), float(c[1])))
-            ts.append(al)
+            u1 = _frame_first_u(v0, rects, s, al, umin=u0 + 1.0)
+            band.append((u0, v0))
+            if u1 is not None:
+                band.append((u1, v0))
+        if len(band) > len(best_band):
+            best_band = band
+    for (u, v0) in best_band:
+        c = (u + 0.5) * d + (v0 + 0.5) * e
+        cs.append((float(c[0]), float(c[1])))
+        ts.append(al)
     return np.array(cs, dtype=float), np.array(ts, dtype=float), s
 
 
@@ -1854,7 +1964,7 @@ def _base_exact_configs(max_n=100):
         c, t, s = _gobel_strip_core(q)
         out.append((n, c, t, s, f"gobel_bande_{q}"))
     # Hämäläinen (n=18), Wainwright (n=19), Stenlund (n=66),
-    # famille √7 généralisée (n=86).
+    # famille √7 généralisée (n=39, 68, 86).
     if max_n >= 18:
         c, t, s = _hamalainen18_core()
         out.append((18, c, t, s, "hamalainen18"))
@@ -1864,9 +1974,14 @@ def _base_exact_configs(max_n=100):
     if max_n >= 66:
         c, t, s = _stenlund66_core()
         out.append((66, c, t, s, "stenlund66"))
-    if max_n >= 86:
-        c, t, s = _sqrt7_86_core()
-        out.append((86, c, t, s, "sqrt7_86"))
+    if max_n >= 37:
+        c, t, s = _cantrell37_core()
+        out.append((37, c, t, s, "cantrell37"))
+    for m, n in ((6, 39), (8, 68), (9, 86)):
+        if max_n >= n:
+            c, t, s = _sqrt7_core(m)
+            assert c.shape[0] == n, (m, c.shape[0])
+            out.append((n, c, t, s, f"sqrt7_{m}"))
     # Trump (n=11) et Bidwell (n=17).
     if max_n >= 11:
         c, t = trump_config(11, 3.877083590022814, None, True, 0.0)
@@ -4409,19 +4524,10 @@ def bench(nmin=1, nmax=10, seed=0, agents=6, iters=250, polish_iters=300,
         # --- repli DS7 : si la recherche dépasse la meilleure construction
         #     exacte certifiée, on enregistre cette construction (plutôt que
         #     de tout refuser).
-        b_max = ds7_certified_side(n)
-        if b_max is not None and a_hat > b_max + 1e-9:
-            repli = max_bound_config(n, rot)
-            if repli is not None:
-                a_trouve = a_hat
-                a_hat, c, th = repli
-                rec = ds7_best(n)
-                diag = (f" (record DS7 {rec:.6f})"
-                        if rec is not None else "")
-                it.write(f"  n = {n:>3} : a trouvé {a_trouve:.6f} > "
-                         f"construction certifiée {b_max:.6f}{diag} — "
-                         f"construction exacte enregistrée "
-                         f"à a = {a_hat:.6f}")
+        repli = ds7_fallback(n, a_hat, rot)
+        if repli is not None:
+            a_hat, c, th, a_trouve, _nom, msg = repli
+            it.write(f"  n = {n:>3} : {msg}")
         # --- règles : solution sur grille OU au-dessus de la meilleure
         #     construction exacte certifiée -> RIEN enregistré, RIEN généré
         ok_sol, raison_sol = solution_acceptable(n, a_hat)
@@ -4533,6 +4639,29 @@ def main(argv=None):
         ok = gradcheck()
         return 0 if ok else 1
 
+    # Validation des paramètres numériques (les erreurs argparse évitent les
+    # traces Python et les divisions par zéro plus loin).
+    if args.runs < 1:
+        ap.error("--runs doit être >= 1")
+    if not (args.tol > 0.0):
+        ap.error("--tol doit être > 0")
+    if args.iters < 1:
+        ap.error("--iters doit être >= 1")
+    if args.agents < 1:
+        ap.error("--agents doit être >= 1")
+    if args.polish < 1:
+        ap.error("--polish doit être >= 1")
+    if args.anneal_iters < 0:
+        ap.error("--anneal-iters doit être >= 0")
+    if args.kicks < 0:
+        ap.error("--kicks doit être >= 0")
+    if args.workers < 1:
+        ap.error("--workers doit être >= 1")
+    if args.max_slots < 1:
+        ap.error("--max-slots doit être >= 1")
+    if args.time_budget < 0.0:
+        ap.error("--time-budget doit être >= 0")
+
     rot = not args.no_rotate
     warmup_jit()                # B2 : compilation JIT (et scipy) AVANT fork
     setup_pool(args.workers)    # pool de processus (agents + polissages)
@@ -4545,14 +4674,18 @@ def main(argv=None):
                 args.range.replace("..", ";").replace(",", ";")
                 .replace(":", ";").replace("-", ";").split(";")
                 if v.strip()]
-        if len(vals) == 1:
-            nmin = nmax = int(vals[0])
-        elif len(vals) == 2:
-            nmin, nmax = int(vals[0]), int(vals[1])
-        elif len(vals) == 0:
+        if len(vals) == 0:
             ap.error("--range attend la forme A;B")
-        else:
+        if len(vals) > 2:
             ap.error("--range attend au plus deux bornes : A;B")
+        try:
+            nums = [int(v) for v in vals]
+        except ValueError:
+            ap.error("--range : bornes entières attendues (ex. 11;15)")
+        if len(nums) == 1:
+            nmin = nmax = nums[0]
+        else:
+            nmin, nmax = nums
         if nmin > nmax:
             nmin, nmax = nmax, nmin
         if nmin < 1:
@@ -4607,22 +4740,15 @@ def main(argv=None):
     # --- repli DS7 : si la recherche dépasse la meilleure construction
     #     exacte certifiée, on enregistre cette construction.
     a_borne_trouvee = None
-    b_max = ds7_certified_side(n)
-    if b_max is not None and a_hat > b_max + 1e-9:
-        repli = max_bound_config(n, rot)
-        if repli is not None:
-            a_borne_trouvee = a_hat
-            a_hat, c, th = repli
+    repli = ds7_fallback(n, a_hat, rot)
+    if repli is not None:
+        a_hat, c, th, a_borne_trouvee, nom_repli, msg_repli = repli
 
     print("-" * 74)
     print(f"meilleure taille de conteneur trouvée : a ≈ {a_hat:.6f}   "
           f"densité = {density(n, a_hat):.4f}   ({dt:.1f} s)")
     if a_borne_trouvee is not None:
-        rec = ds7_best(n)
-        diag = f" (record DS7 {rec:.6f})" if rec is not None else ""
-        print(f"repli sur la meilleure construction exacte certifiée "
-              f"{b_max:.6f}{diag} : a trouvé {a_borne_trouvee:.6f} > "
-              f"{b_max:.6f} — construction enregistrée à a = {a_hat:.6f}")
+        print(msg_repli)
     v = exact_violation(c, th, a_hat)
     print(f"vérification exacte (géométrie interne) : violation = {v:.3e} "
           f"-> {'valide' if v <= FEAS_TOL else 'INVALIDE'}")
@@ -4632,11 +4758,16 @@ def main(argv=None):
     ok_sol, raison_sol = solution_acceptable(n, a_hat)
     if not ok_sol:
         print(f"solution refusée : {raison_sol}")
+        if not args.no_fig:
+            stale = args.out or figure_path(n, outdir)
+            if os.path.exists(stale):
+                print(f"attention : une ancienne figure subsiste : {stale}")
         return 0
     # --- sauvegarde texte/dossier supprimés : seule la figure individuelle ---
     if not args.no_fig:
         os.makedirs(dir_figures(outdir), exist_ok=True)
         path = args.out or figure_path(n, outdir)
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
         plot_packing(c, th, a_hat, path, n)
         print(f"figure : {path}")
     else:
