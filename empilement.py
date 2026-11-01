@@ -37,14 +37,14 @@ Méthode
    Chaque membre est évalué exactement ; les meilleurs sont polis.
    Constructions exactes issues de DS7 (carré dans carré) :
    - Göbel généralisé pour n = k²+1 (côté k + √2/2) ;
+   - bande diagonale de Göbel : n = q²+q+3+⌊(q-1)√2⌋ (côté q+1+1/√2) ;
    - Göbel à bloc b×b tourné pour n = 2q²+2q+b² (côté q+1+b/√2) ;
    - variante décentrée pour n = 2q²+4q+b²+1 (côté q+3/2+b/√2) ;
-   - Trump (n=11), Bidwell (n=17) ;
+   - Trump (n=11), Bidwell (n=17), Hämäläinen (n=18),
+     Wainwright (n=19), Stenlund (n=66), famille √7 (n=86) ;
    - augmentation en « L » : n' = n + 2⌊s⌋ + 1 pour un côté s+1.
-   Ces constructions sont certifiées directement, sans essai. Les amorces
-   ciblées des records DS7 (bandes diagonales, Hämäläinen, bandes larges)
-   restent heuristiques : elles ne deviennent des majorants qu'après
-   certification.
+   Ces constructions sont certifiées directement, sans essai. Seules les
+   amorces des records purement numériques restent heuristiques.
 5. Recherche de C(n) : descente géométrique de `a` suivie d'une bissection.
    La borne basse utilise les minorants publiés de DS7 (et non plus la seule
    aire), ce qui permet d'afficher un encadrement [minorant, majorant].
@@ -64,11 +64,12 @@ descente ; --runs K lance K runs multi-graines successifs et retient le meilleur
 RÈGLES D'ENREGISTREMENT (solution_acceptable) — une solution refusée n'est
 NI enregistrée NI générée :
   1. solution SUR GRILLE : côté `a` entier (n = k², k²-1, ...) -> rien ;
-  2. cas n = k²+1 : borne maximale k + √2/2 (ex. n = 37 -> 6.707107) ;
-     une solution au-dessus est remplacée par la construction exacte de
-     Göbel AU CÔTÉ DE LA BORNE (si les rotations sont autorisées), donc
-     elle est enregistrée ; refus seulement si cette construction n'est
-     pas disponible.
+  2. repli DS7 : si n a un record primitif (Table 1) ET qu'une construction
+     exacte certifiée existe pour ce n, une solution de côté supérieur est
+     remplacée par cette construction (si les rotations sont autorisées),
+     donc elle est enregistrée ; refus seulement si la construction n'est
+     pas certifiable. Une borne publiée purement numérique n'est jamais
+     utilisée comme contrainte sans construction certifiée.
 
 Sortie
 ------
@@ -134,6 +135,99 @@ def bound_k2_plus1(n):
     return None
 
 
+# --- Records DS7 (Table 1) et repli sur les constructions exactes ---------
+# Table 1 du survey DS7 : meilleurs majorants connus s(n) pour n <= 100.
+# Les lignes « n-m » désignent un intervalle. Les valeurs numériques sont
+# des records publiés (non re-démontrés ici) : elles servent uniquement de
+# diagnostic. Le repli n'utilise que des constructions exactes certifiées.
+_SQRT7 = math.sqrt(7.0)
+_DS7_BEST_ROWS = (
+    ((1, 1), 1.0),
+    ((2, 4), 2.0),
+    ((5, 5), 2.0 + 1.0 / SQRT2),
+    ((6, 9), 3.0),
+    ((10, 10), 3.0 + 1.0 / SQRT2),
+    ((11, 11), 3.8771),
+    ((12, 16), 4.0),
+    ((17, 17), 4.6756),
+    ((18, 18), 3.5 + _SQRT7 / 2.0),
+    ((19, 19), 3.0 + 4.0 * SQRT2 / 3.0),
+    ((20, 25), 5.0),
+    ((26, 26), 3.5 + 1.5 * SQRT2),
+    ((27, 27), 5.0 + 1.0 / SQRT2),
+    ((28, 28), 3.0 + 2.0 * SQRT2),
+    ((29, 29), 5.9344),
+    ((30, 36), 6.0),
+    ((37, 37), 6.5987),
+    ((38, 38), 6.0 + 1.0 / SQRT2),
+    ((39, 39), 6.8189),
+    ((40, 40), 4.0 + 2.0 * SQRT2),
+    ((41, 41), 6.9473),
+    ((42, 49), 7.0),
+    ((50, 50), 7.5987),
+    ((51, 51), 7.7044),
+    ((52, 52), 7.0 + 1.0 / SQRT2),
+    ((53, 53), 7.8231),
+    ((54, 54), 7.8488),
+    ((55, 55), 7.9871),
+    ((56, 64), 8.0),
+    ((65, 65), 5.0 + 5.0 / SQRT2),
+    ((66, 66), 3.0 + 4.0 * SQRT2),
+    ((67, 67), 8.0 + 1.0 / SQRT2),
+    ((68, 68), 7.5 + _SQRT7 / 2.0),
+    ((69, 69), 8.8562),
+    ((70, 70), 8.9121),
+    ((71, 71), 8.9633),
+    ((72, 81), 9.0),
+    ((82, 82), 6.0 + 5.0 / SQRT2),
+    ((83, 83), 4.0 + 4.0 * SQRT2),
+    ((84, 84), 9.0 + 1.0 / SQRT2),
+    ((85, 85), 5.5 + 3.0 * SQRT2),
+    ((86, 86), 8.5 + _SQRT7 / 2.0),
+    ((87, 87), 9.8520),
+    ((88, 88), 9.9018),
+    ((89, 89), 5.0 + 7.0 / SQRT2),
+    ((90, 100), 10.0),
+)
+DS7_BEST = {}
+# n dont le record DS7 provient d'un empilement primitif (ligne isolée).
+DS7_SPECIAL = set()
+for (_lo, _hi), _val in _DS7_BEST_ROWS:
+    for _n in range(_lo, _hi + 1):
+        DS7_BEST[_n] = _val
+        if _lo == _hi:
+            DS7_SPECIAL.add(_n)
+DS7_SPECIAL.discard(1)
+
+
+def ds7_best(n):
+    """Meilleur majorant publié dans DS7 (diagnostic, pas un certificat)."""
+    return DS7_BEST.get(int(n))
+
+
+def ds7_certified_config(n):
+    """Meilleure construction exacte certifiée pour n (carré dans carré).
+
+    Renvoie (nom, centres, angles, côté) ou None. On se limite aux n dont
+    le record DS7 est primitif : le repli ne s'applique qu'à ces cas, et
+    seulement si une construction exacte est effectivement disponible.
+    """
+    c = _ctx()
+    if not (c['sqs'] and c['sqc']):
+        return None
+    n = int(n)
+    if n not in DS7_SPECIAL:
+        return None
+    items = exact_configs(n, limit=1)
+    return items[0] if items else None
+
+
+def ds7_certified_side(n):
+    """Côté de la meilleure construction exacte certifiée pour n, ou None."""
+    it = ds7_certified_config(n)
+    return it[3] if it is not None else None
+
+
 def solution_acceptable(n, a, tol=1e-6):
     """Règles d'enregistrement — n'ont de sens que pour carré dans carré.
     Sinon on autorise (pas de tables/borne appliquées)."""
@@ -144,33 +238,36 @@ def solution_acceptable(n, a, tol=1e-6):
     if abs(a - r) <= tol and r >= 1:
         return False, (f"solution sur grille (a = {r:g}, entier — n = "
                        f"{r}²±) : rien ni enregistré ni généré")
-    b = bound_k2_plus1(n)
+    b = ds7_certified_side(n)
     if b is not None and a > b + 1e-9:
-        k = math.isqrt(n)
-        return False, (f"n = {k}²+1 : a = {a:.6f} > borne maximale "
-                       f"{b:.6f} (√{k}² + √2/2) : rien ni enregistré "
-                       f"ni généré")
+        rec = ds7_best(n)
+        diag = f" (record DS7 {rec:.6f})" if rec is not None else ""
+        return False, (f"n = {n} : a = {a:.6f} > meilleure construction "
+                       f"exacte certifiée {b:.6f}{diag} : rien ni "
+                       f"enregistré ni généré")
     return True, ""
 
 
 def max_bound_config(n, rot=True):
-    """Empilement exact à la borne maximale k + √2/2 (n = k²+1).
+    """Repli certifié : meilleure construction exacte connue pour n.
 
-    Repli utilisé quand la recherche renvoie un côté supérieur à la borne :
-    on enregistre alors la construction de Göbel au côté de la borne plutôt
-    que de ne rien produire.  Renvoie (a, centres, thetas), ou None si la
-    construction n'est pas disponible (k < 2, rotations interdites) ou n'est
-    pas certifiable.
+    Utilisé quand la recherche renvoie un côté supérieur à cette
+    construction : on enregistre alors la construction exacte plutôt que de
+    ne rien produire.  Renvoie (a, centres, thetas), ou None si aucune
+    construction certifiée n'est disponible (n hors DS7 primitif, rotations
+    interdites, ou construction non certifiable).
     """
-    b = bound_k2_plus1(n)
-    if b is None or not rot:
+    if not rot:
         return None
-    k = math.isqrt(n)
-    if k < 2:
+    it = ds7_certified_config(n)
+    if it is None:
         return None
+    b = float(it[3])
     try:
-        c, t = _gobel_core(k)
-        a, c, t = certify(c, t, b, rot)
+        _name, c0, t0, s0 = it
+        if s0 > b + 1e-9:
+            return None
+        a, c, t = certify(c0, t0, b, rot)
     except Exception:
         return None
     if a > b + 1e-9 or exact_violation(c, t, a) > FEAS_TOL:
@@ -1519,6 +1616,228 @@ def _l_augment_core(centers, thetas, s):
     return cc, tt, S
 
 
+# --- Constructions exactes DS7 supplémentaires (Option A) ------------------
+
+def _gobel_strip_core(q):
+    """Bande diagonale de Göbel : n = q²+q+3+⌊(q-1)√2⌋, côté q+1+1/√2.
+
+    Deux escaliers de q(q+1)/2 carrés bordent la diagonale, deux coins la
+    complètent, et b = 1+⌊(q-1)√2⌋ carrés à 45° occupent le couloir central.
+    """
+    S = q + 1.0 + 1.0 / SQRT2
+    b = 1 + int(math.floor((q - 1) * SQRT2 + 1e-9))
+    cs, ts = [], []
+    for i in range(q):
+        for j in range(q - i):
+            cs.append((i + 0.5, S - j - 0.5))
+            ts.append(0.0)
+            cs.append((S - i - 0.5, j + 0.5))
+            ts.append(0.0)
+    cs += [(0.5, 0.5), (S - 0.5, S - 0.5)]
+    ts += [0.0, 0.0]
+    # Couloir diagonal : b carrés de côté 1, centrés sur la diagonale.
+    free = S * SQRT2 - 2.0 * SQRT2
+    u0 = SQRT2 + (free - b) / 2.0 + 0.5
+    for m in range(b):
+        u = (u0 + m) / SQRT2
+        cs.append((u, u))
+        ts.append(math.pi / 4.0)
+    return np.array(cs, dtype=float), np.array(ts, dtype=float), S
+
+
+def _wainwright_core():
+    """Wainwright n=19 : côté 3+4√2/3, 11 carrés alignés + 8 à 45°."""
+    s = 3.0 + 4.0 * SQRT2 / 3.0
+    r = HALF_SQRT2
+    axis = [
+        (0.5, s - 0.5), (1.5, s - 0.5), (0.5, s - 1.5),
+        (s - 0.5, 0.5), (s - 1.5, 0.5), (s - 2.5, 0.5),
+        (s - 0.5, 1.5), (s - 1.5, 1.5), (s - 0.5, 2.5),
+        (0.5, 0.5), (s - 0.5, s - 0.5),
+    ]
+    tilted = [
+        (1.5 + 3.0 * r, 2.5 + 4.0 * r / 3.0),
+        (1.5 + 2.0 * r, 2.5 + 7.0 * r / 3.0),
+        (2.0 + 4.0 * r / 3.0, 2.0 + r),
+        (2.0 + r / 3.0, 2.0 + 2.0 * r),
+        (0.5 + 4.0 * r / 3.0, 1.5 - r / 3.0),
+        (0.5 + r / 3.0, 1.5 + 2.0 * r / 3.0),
+        (1.0 + 5.0 * r / 3.0, 1.0 + 4.0 * r / 3.0),
+        (1.0 + 2.0 * r / 3.0, 1.0 + 7.0 * r / 3.0),
+    ]
+    cs = axis + tilted
+    ts = [0.0] * len(axis) + [math.pi / 4.0] * len(tilted)
+    return np.array(cs, dtype=float), np.array(ts, dtype=float), s
+
+
+def _hamalainen18_core():
+    """Hämäläinen n=18 : côté (7+√7)/2, angle atan((4−√7)/3).
+
+    10 carrés alignés (un « L » et son image par 180°) et 8 carrés inclinés
+    formés de deux dominos 1×2 et de leurs images par 180°.
+    """
+    s = (7.0 + _SQRT7) / 2.0
+    al = math.atan((4.0 - _SQRT7) / 3.0)
+    ca, sa, ta = math.cos(al), math.sin(al), math.tan(al)
+    axis = [
+        (0.5, 0.5), (0.5, 1.5), (0.5, 2.5), (1.5, 0.5),
+        (0.5, s - 0.5),
+    ]
+    axis += [(s - x, s - y) for (x, y) in list(axis)]
+    x1 = 2.5 + _SQRT7 / 2.0 - ca + 0.75 * sa
+    y1 = 1.0 - sa + 0.75 * sa * ta
+    x2 = (1.5 * sa * ca - 2.0 * sa + (_SQRT7 / 2.0) * sa * ca + 2.5
+          - ca * ca + _SQRT7 / 2.0 - ca)
+    y2 = (2.5 - 1.5 * ca * ca + 2.0 * ca + _SQRT7 / 2.0
+          - (_SQRT7 / 2.0) * ca * ca - sa * ca - sa)
+    off = (0.5 * (ca - sa), 0.5 * (sa + ca))
+    p1 = (x1 + off[0], y1 + off[1])
+    p2 = (p1[0] - sa, p1[1] + ca)
+    p3 = (x2 + off[0], y2 + off[1])
+    p4 = (p3[0] - sa, p3[1] + ca)
+    tilted = [p1, p2, p3, p4]
+    tilted += [(s - x, s - y) for (x, y) in tilted]
+    cs = axis + tilted
+    ts = [0.0] * len(axis) + [al] * len(tilted)
+    return np.array(cs, dtype=float), np.array(ts, dtype=float), s
+
+
+def _stenlund66_core():
+    """Stenlund n=66 : côté 3+4√2, bloc 3×8 à 45° et escaliers alignés."""
+    s = 3.0 + 4.0 * SQRT2
+    cs, ts = [], []
+    # Bloc 3 × 8 à 45° en repère diagonal (u,v), puis retour aux axes.
+    for k in range(3):
+        u = (3.0 + k) + 5.0 * SQRT2 / 4.0
+        for j in range(8):
+            v = -3.5 + j
+            cs.append(((u + v) / SQRT2, (u - v) / SQRT2))
+            ts.append(math.pi / 4.0)
+    # Escalier bas-gauche.
+    for r in range(5):
+        for i in range(5 - r):
+            cs.append((0.5 + i, 0.5 + r))
+            ts.append(0.0)
+    # Petits blocs des coins haut-gauche et bas-droit.
+    cs += [(0.5, s - 0.5), (1.5, s - 0.5), (0.5, s - 1.5)]
+    ts += [0.0] * 3
+    cs += [(s - 1.5, 0.5), (s - 0.5, 0.5), (s - 0.5, 1.5)]
+    ts += [0.0] * 3
+    # Escalier haut-droit.
+    for r in range(6):
+        for i in range(6 - r):
+            cs.append((s - 0.5 - i, s - 0.5 - r))
+            ts.append(0.0)
+    return np.array(cs, dtype=float), np.array(ts, dtype=float), s
+
+
+def _sqrt7_rects(m):
+    """Escaliers alignés de la famille √7 et deux cellules de coin.
+
+    A occupe les rangées hautes à gauche (largeurs m-2 … 1), B les rangées
+    basses à droite (largeurs m-1 … 2), plus la cellule de jonction et le
+    coin inférieur gauche.
+    """
+    s = (m - 0.5) + _SQRT7 / 2.0
+    A = [(0.0, float(m - 2 - i), s - 1 - i, s - i)
+         for i in range(m - 2)]
+    B = [(s - (m - 1) + j, s, float(j), float(j + 1))
+         for j in range(m - 2)]
+    rowcell = (s - 1.0, s, float(m - 2), float(m - 1))
+    fill = (0.0, 1.0, 0.0, 1.0)
+    return s, A + B + [rowcell, fill]
+
+
+def _frame_first_u(v0, rects, s, angle, umin=-math.inf):
+    """Plus petit u >= umin pour un carré unité du repère tourné.
+
+    Le carré occupe [u,u+1]×[v0,v0+1] dans le repère d'axes
+    (-sin angle, cos angle) et (cos angle, sin angle). On le veut dans
+    [0,s]² et disjoint des rectangles alignés `rects`. Résolution exacte par
+    intervalles interdits (théorème des axes séparateurs).
+    """
+    d = np.array([-math.sin(angle), math.cos(angle)])
+    e = np.array([math.cos(angle), math.sin(angle)])
+    h = 0.5 * (abs(d[0]) + abs(e[0]))
+    x0 = np.array([r[0] for r in rects])
+    x1 = np.array([r[1] for r in rects])
+    y0 = np.array([r[2] for r in rects])
+    y1 = np.array([r[3] for r in rects])
+    cv = v0 + 0.5
+    lo = np.full(len(rects), -np.inf)
+    hi = np.full(len(rects), np.inf)
+    wlo, whi = -np.inf, np.inf
+    for ax, a0, a1 in ((0, x0, x1), (1, y0, y1)):
+        if abs(d[ax]) < 1e-14:
+            c = cv * e[ax]
+            sep = (c + h <= a0 + 1e-9) | (c - h >= a1 - 1e-9)
+            lo = np.where(sep, np.inf, lo)
+            hi = np.where(sep, -np.inf, hi)
+            continue
+        t1 = (a0 - h - cv * e[ax]) / d[ax] - 0.5
+        t2 = (a1 + h - cv * e[ax]) / d[ax] - 0.5
+        lo = np.maximum(lo, np.minimum(t1, t2))
+        hi = np.minimum(hi, np.maximum(t1, t2))
+        ta = (h - cv * e[ax]) / d[ax] - 0.5
+        tb = (s - h - cv * e[ax]) / d[ax] - 0.5
+        wlo = max(wlo, min(ta, tb))
+        whi = min(whi, max(ta, tb))
+    X = np.column_stack([x0, x0, x1, x1])
+    Y = np.column_stack([y0, y1, y0, y1])
+    pd = X * d[0] + Y * d[1]
+    pe = X * e[0] + Y * e[1]
+    lo = np.maximum(lo, pd.min(1) - 1.0)
+    hi = np.minimum(hi, pd.max(1))
+    sep_e = (v0 + 1.0 <= pe.min(1) + 1e-9) | (v0 >= pe.max(1) - 1e-9)
+    drop = sep_e | (lo >= hi)
+    lo = np.where(drop, np.inf, lo)
+    hi = np.where(drop, -np.inf, hi)
+    start = max(umin, wlo)
+    cand = np.concatenate([[start], hi])
+    inside = ((lo[None, :] + 1e-9 < cand[:, None])
+              & (cand[:, None] < hi[None, :] - 1e-9))
+    ok = (~inside.any(axis=1) & (cand >= start - 1e-9)
+          & (cand <= whi + 1e-9))
+    cand = np.where(ok, cand, np.inf)
+    u = float(cand.min())
+    return u if math.isfinite(u) else None
+
+
+def _sqrt7_86_core():
+    """Famille √7, m=9 (n=86) : côté 17/2+√7/2, angle atan((4−√7)/3).
+
+    65 carrés alignés (deux escaliers et deux cellules de coin) et une bande
+    de 21 carrés inclinés répartis en 11 couloirs. Les positions de la bande
+    sont résolues exactement par contacts (pas de table de coordonnées).
+    """
+    m = 9
+    s, rects = _sqrt7_rects(m)
+    al = math.atan((4.0 - _SQRT7) / 3.0)
+    d = np.array([-math.sin(al), math.cos(al)])
+    e = np.array([math.cos(al), math.sin(al)])
+    cs, ts = [], []
+    for (rx0, rx1, ry0, ry1) in rects:
+        for i in range(int(round(rx1 - rx0))):
+            for j in range(int(round(ry1 - ry0))):
+                cs.append((rx0 + i + 0.5, ry0 + j + 0.5))
+                ts.append(0.0)
+    phase = 21.0 / 64.0
+    kmax = int(math.ceil(s * (abs(e[0]) + abs(e[1])))) + 2
+    for k in range(-1, kmax):
+        v0 = phase + k
+        u0 = _frame_first_u(v0, rects, s, al)
+        if u0 is None:
+            continue
+        u1 = _frame_first_u(v0, rects, s, al, umin=u0 + 1.0)
+        for u in (u0, u1):
+            if u is None:
+                continue
+            c = (u + 0.5) * d + (v0 + 0.5) * e
+            cs.append((float(c[0]), float(c[1])))
+            ts.append(al)
+    return np.array(cs, dtype=float), np.array(ts, dtype=float), s
+
+
 def _base_exact_configs(max_n=100):
     """Configurations exactes de base, avant augmentations en « L »."""
     out = []
@@ -1527,6 +1846,27 @@ def _base_exact_configs(max_n=100):
         n = k * k + 1
         c, t = _gobel_core(k)
         out.append((n, c, t, k + HALF_SQRT2, f"gobel_k{k}"))
+    # Bande diagonale de Göbel : n = q²+q+3+⌊(q-1)√2⌋.
+    for q in range(1, max_n + 1):
+        n = q * q + q + 3 + int(math.floor((q - 1) * SQRT2 + 1e-9))
+        if n > max_n:
+            break
+        c, t, s = _gobel_strip_core(q)
+        out.append((n, c, t, s, f"gobel_bande_{q}"))
+    # Hämäläinen (n=18), Wainwright (n=19), Stenlund (n=66),
+    # famille √7 généralisée (n=86).
+    if max_n >= 18:
+        c, t, s = _hamalainen18_core()
+        out.append((18, c, t, s, "hamalainen18"))
+    if max_n >= 19:
+        c, t, s = _wainwright_core()
+        out.append((19, c, t, s, "wainwright19"))
+    if max_n >= 66:
+        c, t, s = _stenlund66_core()
+        out.append((66, c, t, s, "stenlund66"))
+    if max_n >= 86:
+        c, t, s = _sqrt7_86_core()
+        out.append((86, c, t, s, "sqrt7_86"))
     # Trump (n=11) et Bidwell (n=17).
     if max_n >= 11:
         c, t = trump_config(11, 3.877083590022814, None, True, 0.0)
@@ -1608,6 +1948,16 @@ def exact_configs(n, rng=None, jitter=0.0, limit=6):
         if len(out) >= limit:
             break
     return out
+
+
+def construction_fits_rotation(thetas, rot):
+    """Une construction reste utilisable sans rotation si elle est déjà
+    alignée sur les axes. Une rotation de π/2 (ou multiple) d'un carré est
+    équivalente à l'identité : on l'accepte donc aussi."""
+    if rot:
+        return True
+    quarts = np.asarray(thetas) / (0.5 * np.pi)
+    return bool(np.all(np.abs(quarts - np.round(quarts)) <= 1e-9))
 
 
 def best_exact_side(n):
@@ -3390,6 +3740,8 @@ def attempt(n, a, rng, agents=6, iters=250, polish_iters=300,
         # certifiées gratuites et servent d'amorces ET de champions.
         efam = []
         for _nm, cc, tt, ss in exact_configs(n, rng, limit=6):
+            if not construction_fits_rotation(tt, rot):
+                continue
             g = place_exact(cc, tt, ss, a, rng, 0.0, rot)
             if g is not None:
                 efam.append(g)
@@ -3397,6 +3749,8 @@ def attempt(n, a, rng, agents=6, iters=250, polish_iters=300,
         # certifiées/probées avant tout usage comme majorant).
         xfam = []
         for _nm, cc, tt, ss in target_configs(n, rng):
+            if not construction_fits_rotation(tt, rot):
+                continue
             g = place_exact(cc, tt, ss, a, rng, 0.0, rot)
             if g is not None:
                 xfam.append(g)
@@ -3625,6 +3979,8 @@ def estimate_C(n, rng, tol=2e-3, agents=6, iters=250, polish_iters=300,
     lb = lower_bound(n)
     if not _CIRC_SHAPE and not _CIRC_CONT:
         for _nm, _c0, _t0, _s0 in exact_configs(n, limit=8):
+            if not construction_fits_rotation(_t0, rot):
+                continue
             _ac, _cc, _tt = certify(_c0, _t0, _s0, rot)
             if _ac < best_a - 1e-12:
                 best_a, best_cfg = _ac, (_cc, _tt)
@@ -3632,6 +3988,8 @@ def estimate_C(n, rng, tol=2e-3, agents=6, iters=250, polish_iters=300,
                 a_hi = _ac
             champs.append((_cc, _tt, _ac))
         for _nm, _c0, _t0, _s0 in target_configs(n):
+            if not construction_fits_rotation(_t0, rot):
+                continue
             _ac, _cc, _tt = certify(_c0, _t0, _s0, rot)
             if _ac < best_a - 1e-12:
                 best_a, best_cfg = _ac, (_cc, _tt)
@@ -3639,6 +3997,8 @@ def estimate_C(n, rng, tol=2e-3, agents=6, iters=250, polish_iters=300,
                 a_hi = _ac
             champs.append((_cc, _tt, _ac))
         for (_c0, _t0, _s0) in extra_champs:
+            if not construction_fits_rotation(_t0, rot):
+                continue
             _ac, _cc, _tt = certify(_c0, _t0, _s0, rot)
             if _ac < best_a - 1e-12:
                 best_a, best_cfg = _ac, (_cc, _tt)
@@ -4046,20 +4406,24 @@ def bench(nmin=1, nmax=10, seed=0, agents=6, iters=250, polish_iters=300,
             anneal_iters=anneal_iters, kicks=kicks,
             arch=arch, spec=spec, time_budget=time_budget,
             extra_champs=tuple(aug_cache.get(n, ())))
-        # --- repli n = k²+1 : si la recherche dépasse la borne k + √2/2,
-        #     on enregistre la construction exacte de Göbel AU CÔTÉ DE LA
-        #     BORNE (plutôt que de tout refuser).
-        b_max = bound_k2_plus1(n)
+        # --- repli DS7 : si la recherche dépasse la meilleure construction
+        #     exacte certifiée, on enregistre cette construction (plutôt que
+        #     de tout refuser).
+        b_max = ds7_certified_side(n)
         if b_max is not None and a_hat > b_max + 1e-9:
             repli = max_bound_config(n, rot)
             if repli is not None:
                 a_trouve = a_hat
                 a_hat, c, th = repli
-                it.write(f"  n = {n:>3} : a trouvé {a_trouve:.6f} > borne "
-                         f"{b_max:.6f} — construction exacte enregistrée "
+                rec = ds7_best(n)
+                diag = (f" (record DS7 {rec:.6f})"
+                        if rec is not None else "")
+                it.write(f"  n = {n:>3} : a trouvé {a_trouve:.6f} > "
+                         f"construction certifiée {b_max:.6f}{diag} — "
+                         f"construction exacte enregistrée "
                          f"à a = {a_hat:.6f}")
-        # --- règles : solution sur grille OU n = k²+1 au-dessus de la borne
-        #     k + √2/2 -> RIEN enregistré, RIEN généré
+        # --- règles : solution sur grille OU au-dessus de la meilleure
+        #     construction exacte certifiée -> RIEN enregistré, RIEN généré
         ok_sol, raison_sol = solution_acceptable(n, a_hat)
         if not ok_sol:
             it.write(f"  n = {n:>3} : refusé — {raison_sol}")
@@ -4240,10 +4604,10 @@ def main(argv=None):
     else:
         a_hat, (c, th), hist, dt = estimate_C(n, rng, **est_kw)
 
-    # --- repli n = k²+1 : si la recherche dépasse la borne k + √2/2, on
-    #     enregistre la construction exacte de Göbel au côté de la borne.
+    # --- repli DS7 : si la recherche dépasse la meilleure construction
+    #     exacte certifiée, on enregistre cette construction.
     a_borne_trouvee = None
-    b_max = bound_k2_plus1(n)
+    b_max = ds7_certified_side(n)
     if b_max is not None and a_hat > b_max + 1e-9:
         repli = max_bound_config(n, rot)
         if repli is not None:
@@ -4254,14 +4618,17 @@ def main(argv=None):
     print(f"meilleure taille de conteneur trouvée : a ≈ {a_hat:.6f}   "
           f"densité = {density(n, a_hat):.4f}   ({dt:.1f} s)")
     if a_borne_trouvee is not None:
-        print(f"repli sur la borne maximale : a trouvé "
-              f"{a_borne_trouvee:.6f} > {b_max:.6f} — construction exacte "
-              f"de Göbel enregistrée à a = {a_hat:.6f}")
+        rec = ds7_best(n)
+        diag = f" (record DS7 {rec:.6f})" if rec is not None else ""
+        print(f"repli sur la meilleure construction exacte certifiée "
+              f"{b_max:.6f}{diag} : a trouvé {a_borne_trouvee:.6f} > "
+              f"{b_max:.6f} — construction enregistrée à a = {a_hat:.6f}")
     v = exact_violation(c, th, a_hat)
     print(f"vérification exacte (géométrie interne) : violation = {v:.3e} "
           f"-> {'valide' if v <= FEAS_TOL else 'INVALIDE'}")
-    # --- règles d'enregistrement : grille (a entier) ou n = k²+1 au-dessus
-    #     de la borne k + √2/2 -> RIEN enregistré, RIEN généré
+    # --- règles d'enregistrement : grille (a entier) ou au-dessus de la
+    #     meilleure construction exacte certifiée -> RIEN enregistré,
+    #     RIEN généré
     ok_sol, raison_sol = solution_acceptable(n, a_hat)
     if not ok_sol:
         print(f"solution refusée : {raison_sol}")

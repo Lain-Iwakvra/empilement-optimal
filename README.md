@@ -48,14 +48,15 @@ resultats/figures/empilement_n<n>_<mode>.png
 Les solutions refusées ne produisent aucun fichier :
 
 - côté entier en mode carré dans carré ;
-- cas `n = k² + 1` au-dessus de la borne `k + √2/2`, lorsque la
-  construction exacte de Göbel n'est pas disponible (par exemple avec
-  `--no-rotate`).
+- record DS7 primitif pour lequel une construction exacte certifiée existe,
+  lorsque la solution la dépasse et que cette construction n'est pas
+  disponible (par exemple avec `--no-rotate`).
 
-En revanche, si `n = k² + 1` et que la recherche dépasse la borne
-`k + √2/2`, le programme n'abandonne plus : il enregistre la construction
-exacte de Göbel **au côté de la borne** (si les rotations sont autorisées),
-avec la figure correspondante.
+En revanche, si `n` est un record DS7 primitif et qu'une construction exacte
+certifiée existe, le programme n'abandonne plus : il enregistre cette
+construction (si les rotations sont autorisées), avec la figure
+correspondante. Une borne publiée purement numérique n'est jamais imposée
+sans construction certifiée.
 
 ## Constructions et bornes (DS7)
 
@@ -63,15 +64,17 @@ En mode `sq_in_sq`, le programme exploite les constructions exactes du
 recensement DS7 d'Erich Friedman :
 
 - Göbel généralisé pour `n = k²+1` (côté `k + √2/2`) ;
+- bande diagonale de Göbel : `n = q²+q+3+⌊(q−1)√2⌋` (côté `q+1+1/√2`) ;
 - Göbel à bloc `b×b` tourné pour `n = 2q²+2q+b²` (côté `q+1+b/√2`) ;
 - variante décentrée pour `n = 2q²+4q+b²+1` (côté `q+3/2+b/√2`) ;
-- Trump (`n=11`) et Bidwell (`n=17`) ;
+- Trump (`n=11`), Bidwell (`n=17`), Hämäläinen (`n=18`),
+  Wainwright (`n=19`), Stenlund (`n=66`), famille √7 (`n=86`) ;
 - augmentation en « L » : `n' = n + 2⌊s⌋ + 1` pour un côté `s+1`.
 
 Ces configurations sont des **certificats directs** : elles sont vérifiées
-géométriquement puis utilisées comme majorants. Les amorces ciblées des
-records (bandes diagonales, Hämäläinen, bandes larges) restent heuristiques :
-elles ne sont retenues qu'après certification.
+géométriquement puis utilisées comme majorants. Les amorces des records
+purement numériques restent heuristiques : elles ne sont retenues qu'après
+certification.
 
 La borne basse de la bissection utilise les minorants publiés de DS7 (et non
 plus la seule borne d'aire). La console affiche donc un encadrement :
